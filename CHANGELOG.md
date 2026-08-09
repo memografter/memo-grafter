@@ -197,3 +197,18 @@ All notable changes to this project will be documented here.
 
 - Added manual smoke tests for memory accuracy and performance validation.
 - Added optional result export support for live smoke testing.
+
+## [0.4.5] - 2026-08-09
+
+### Added
+
+- Added `MemoGrafter.create()` for asynchronous MemoGrafter initialization.
+- Added `MemoGrafterAgent.create()` for initializing agents through the updated configuration flow.
+
+### Changed
+
+- Updated `MemoGrafterAgent` configuration and initialization flow for more consistent setup and dependency handling.
+
+### Internal
+
+- Added root-level scripts for running `migrate` and `doctor` commands during repository development.
