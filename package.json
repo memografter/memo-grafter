@@ -1,6 +1,6 @@
 {
   "name": "memo-grafter",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "Structured conversational memory for LLM chatbot applications",
   "repository": {
     "type": "git",
