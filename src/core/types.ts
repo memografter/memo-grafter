@@ -350,7 +350,7 @@ export interface MemoGrafterDatabaseConfig {
 
 export interface QueueJobTelemetryEvent {
   jobId: string;
-  kind: "messages" | "text";
+  kind: "messages" | "append" | "text";
   messageCount: number;
   /** UTF-8 byte length of the serialized BullMQ job data. */
   payloadBytes?: number;

@@ -23,6 +23,7 @@ const INCREMENTAL_SEMANTIC_THRESHOLD = 0.6;
 export class IngestPipeline {
   private readonly segmentProcessor: SegmentProcessor;
   private readonly baseDriftThreshold: number;
+  private readonly pendingAppends = new Map<string, Promise<void>>();
 
   constructor(
     /** @internal */
@@ -66,6 +67,29 @@ export class IngestPipeline {
       options,
       firstNewMessageIndex,
     );
+  }
+
+  /** Append messages after the current ingestion checkpoint for a session. */
+  append(messages: Message[], sessionId: string, options: IngestPipelineOptions = {}): Promise<TopicNode[]> {
+    const previous = this.pendingAppends.get(sessionId) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const turn = previous.then(() => current);
+    this.pendingAppends.set(sessionId, turn);
+
+    return previous
+      .then(async () => {
+        if (messages.length === 0) return [];
+        const ingestState = await this.store.getSessionIngestState(sessionId);
+        const startIndex = (ingestState?.lastIngestedMessageIndex ?? -1) + 1;
+        return this.runIncremental(messages, sessionId, startIndex, options, startIndex);
+      })
+      .finally(() => {
+        release();
+        if (this.pendingAppends.get(sessionId) === turn) this.pendingAppends.delete(sessionId);
+      });
   }
 
   async runIncremental(

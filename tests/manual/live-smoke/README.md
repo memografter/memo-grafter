@@ -2,8 +2,8 @@
 
 This directory contains the minimum end-to-end checks for MemoGrafter's critical
 workflows. Unlike unit tests, these checks use the root `.env` and real
-PostgreSQL. The basic chat, graph building, `ingestText`, queue ingestion, and
-Fleet tests call OpenAI. The queue and recall-cache tests use Redis when
+PostgreSQL. The basic chat, external application, graph building, `ingestText`,
+queue ingestion, and Fleet tests call OpenAI. The queue and recall-cache tests use Redis when
 `REDIS_URL` is configured.
 
 The tests create unique sessions and remove only the records they created.
@@ -14,7 +14,7 @@ They do not wipe shared MemoGrafter tables.
 1. Install dependencies and build the project.
 2. Start PostgreSQL and apply the MemoGrafter migration.
 3. Set `DATABASE_URL` in the root `.env`.
-4. Set `OPENAI_API_KEY` for the Grafter test.
+4. Set `OPENAI_API_KEY` for the OpenAI-backed tests, including the external application test.
 5. Optionally set `REDIS_URL` for queue coverage.
 
 ## Commands
@@ -36,6 +36,7 @@ npm run live-smoke:fleet
 npm run live-smoke:crawler
 npm run live-smoke:maintenance
 npm run live-smoke:cache
+npm run live-smoke:external
 ```
 
 Write a timestamped Markdown report:
@@ -88,7 +89,7 @@ Consequently, LLM token figures use an approximation of four characters per
 token and are labelled as estimates. They are not billing data or monetary
 costs.
 
-The basic chat, graph building, `ingestText`, queue ingestion, and Fleet
+The basic chat, external application, graph building, `ingestText`, queue ingestion, and Fleet
 shared-memory tests make paid OpenAI API calls using `gpt-4o-mini` and
 `text-embedding-3-small`. Drift segmentation, recall caching, crawler
 maintenance, and lifecycle checks use controlled test fixtures and make no
