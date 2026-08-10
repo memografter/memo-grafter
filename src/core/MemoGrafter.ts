@@ -1,6 +1,7 @@
 import { Redis } from "ioredis";
 import { GraftRelevancePipeline } from "../retrieval/GraftRelevancePipeline.js";
 import { GrafterPipeline } from "../retrieval/GrafterPipeline.js";
+import { RetrieverPipeline } from "../retrieval/RetrieverPipeline.js";
 import { IngestPipeline } from "../ingestion/conversation/IngestPipeline.js";
 import { IngestQueue } from "../ingestion/IngestQueue.js";
 import { PostgresGraphStore } from "../store/index.js";
@@ -23,6 +24,8 @@ import type {
   MemoryHistoryResult,
   MemoGrafterConfig,
   Message,
+  RetrievalResult,
+  RetrieverConfig,
   TagFilterOptions,
   TopicNode,
   TopicSegment,
@@ -126,6 +129,43 @@ export class MemoGrafter {
 
   ingestNow(messages: Message[], sessionId: string, options: IngestOptions = {}): Promise<TopicNode[]> {
     return this.ingestPipeline.run(messages, sessionId, options);
+  }
+
+  /** Analyze and persist one completed user-assistant exchange. */
+  analyze(input: {
+    sessionId: string;
+    userMessage: string;
+    assistantMessage: string;
+    tags?: string[];
+  }): Promise<TopicNode[]> {
+    const sessionId = this.requireNonBlankString(input?.sessionId, "sessionId");
+    const userMessage = this.requireNonBlankString(input?.userMessage, "userMessage");
+    const assistantMessage = this.requireNonBlankString(input?.assistantMessage, "assistantMessage");
+    if (input.tags !== undefined && (!Array.isArray(input.tags) || input.tags.some((tag) => typeof tag !== "string"))) {
+      throw new TypeError("MemoGrafter analyze tags must be an array of strings.");
+    }
+
+    const messages: Message[] = [
+      { role: "user", content: userMessage },
+      { role: "assistant", content: assistantMessage },
+    ];
+    const options: IngestOptions = input.tags ? { tags: input.tags } : {};
+
+    if (this.ingestQueue) {
+      return this.ingestQueue.enqueueAppend(messages, sessionId, options).then(() => []);
+    }
+    return this.ingestPipeline.append(messages, sessionId, options);
+  }
+
+  /** Retrieve fresh graph context for an external LLM call. */
+  context(input: { sessionId: string; query: string } & RetrieverConfig): Promise<RetrievalResult> {
+    const sessionId = this.requireNonBlankString(input?.sessionId, "sessionId");
+    const query = this.requireNonBlankString(input?.query, "query");
+    const { sessionId: _sessionId, query: _query, ...options } = input;
+    this.validateRetrieverOptions(options);
+
+    const pipeline = new RetrieverPipeline(this.store, this.embedder, options, null);
+    return pipeline.run(query, sessionId);
   }
 
   async enqueueIngest(messages: Message[], sessionId: string, options: IngestOptions = {}): Promise<void> {
@@ -286,6 +326,25 @@ export class MemoGrafter {
 
     if (typeof globalScope.window !== "undefined" && typeof globalScope.document !== "undefined") {
       throw new Error("MemoGrafter requires a Node.js server environment and cannot run in the browser.");
+    }
+  }
+
+  private requireNonBlankString(value: unknown, field: string): string {
+    if (typeof value !== "string" || value.trim().length === 0) {
+      throw new TypeError(`MemoGrafter ${field} must be a non-empty string.`);
+    }
+    return value;
+  }
+
+  private validateRetrieverOptions(options: RetrieverConfig): void {
+    if (options.limit !== undefined && (!Number.isInteger(options.limit) || options.limit <= 0)) {
+      throw new RangeError("MemoGrafter context limit must be a positive integer.");
+    }
+    if (options.tokenBudget !== undefined && (!Number.isInteger(options.tokenBudget) || options.tokenBudget <= 0)) {
+      throw new RangeError("MemoGrafter context tokenBudget must be a positive integer.");
+    }
+    if (options.minSimilarity !== undefined && (!Number.isFinite(options.minSimilarity) || options.minSimilarity < 0 || options.minSimilarity > 1)) {
+      throw new RangeError("MemoGrafter context minSimilarity must be between 0 and 1.");
     }
   }
 

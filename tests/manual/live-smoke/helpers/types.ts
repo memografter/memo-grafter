@@ -38,8 +38,8 @@ export interface QueueUsage {
   lastJobMessageCount: number | null;
   firstJobPayloadBytes: number | null;
   lastJobPayloadBytes: number | null;
-  firstJobKind: "messages" | "text" | null;
-  lastJobKind: "messages" | "text" | null;
+  firstJobKind: "messages" | "append" | "text" | null;
+  lastJobKind: "messages" | "append" | "text" | null;
 }
 
 export interface RuntimeComponent {

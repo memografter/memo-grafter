@@ -163,6 +163,32 @@ const memo = await MemoGrafter.create(config, {
 });
 ```
 
+### Use with an existing AI application
+
+`MemoGrafter` can provide memory to any SDK or framework without owning its LLM call. Retrieve fresh graph context before the call, then analyze the completed exchange afterward:
+
+```ts
+const context = await memo.context({
+  sessionId,
+  query: userMessage,
+  limit: 10,
+  tokenBudget: 1200,
+});
+
+const assistantMessage = await myApplication.invoke({
+  systemPrompt: context.systemPrompt,
+  userMessage,
+});
+
+await memo.analyze({
+  sessionId,
+  userMessage,
+  assistantMessage,
+});
+```
+
+`context()` returns the prompt, topic nodes, and atomic memory facts selected by the existing retrieval pipeline. It bypasses the recall cache so it always reads current graph state. `analyze()` appends one user-assistant exchange and processes it through the existing drift detection, extraction, and graph persistence pipeline. Existing `MemoGrafterAgent` usage remains fully supported.
+
 The `.js` import specifier is intentional for NodeNext TypeScript projects. The config is compiled
 with the rest of the application, so development watchers pick up changes and production changes
 use the application's normal build. `create()` calls `initialize()`; constructor-based applications

@@ -7,10 +7,12 @@ import { driftAndPersistenceSmoke } from "./ingestion/drift-and-persistence.js";
 import { queueSmoke } from "./ingestion/queue.js";
 import { ingestTextSmoke } from "./ingestion/ingest-text.js";
 import { memoryLifecycleSmoke } from "./maintenance/memory-lifecycle.js";
+import { analyzeContextSmoke } from "./external-application/analyze-context.js";
 import { runSmokeTests } from "./helpers/runner.js";
 
 await runSmokeTests([
   basicChatSmoke,
+  analyzeContextSmoke,
   graphBuildingSmoke,
   ingestTextSmoke,
   driftAndPersistenceSmoke,

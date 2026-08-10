@@ -162,6 +162,26 @@ function createPipeline(store: IncrementalStore): IngestPipeline {
 }
 
 describe("IngestPipeline incremental ingest", () => {
+  it("serializes exchange appends and allocates consecutive message indexes", async () => {
+    const store = new IncrementalStore();
+    const pipeline = createPipeline(store);
+
+    await Promise.all([
+      pipeline.append([
+        { role: "user", content: "I am planning a Japan trip." },
+        { role: "assistant", content: "Which cities interest you?" },
+      ], "session-append"),
+      pipeline.append([
+        { role: "user", content: "Tokyo and Kyoto." },
+        { role: "assistant", content: "Both are excellent choices." },
+      ], "session-append"),
+    ]);
+
+    expect(store.messageWrites.map((write) => write.startIndex)).toEqual([0, 2]);
+    expect(store.messages).toHaveLength(4);
+    expect(store.ingestState?.lastIngestedMessageIndex).toBe(3);
+  });
+
   it("skips already ingested messages and appends nodes for new messages only", async () => {
     const store = new IncrementalStore();
     const pipeline = createPipeline(store);

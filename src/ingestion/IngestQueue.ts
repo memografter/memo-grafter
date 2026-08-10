@@ -13,6 +13,11 @@ type IngestJobData = {
   sessionId: string;
   options?: IngestPipelineOptions;
 } | {
+  kind: "append";
+  messages: Message[];
+  sessionId: string;
+  options?: IngestPipelineOptions;
+} | {
   kind: "text";
   text: string;
   sessionId: string;
@@ -95,6 +100,28 @@ export class IngestQueue {
     }
   }
 
+  async enqueueAppend(
+    messages: Message[],
+    sessionId: string,
+    options: IngestPipelineOptions = {},
+  ): Promise<void> {
+    try {
+      await this.withTimeout(
+        this.queue.add(
+          "ingest-append",
+          { kind: "append", messages: [...messages], sessionId, options },
+          this.defaultJobOptions,
+        ),
+        1000,
+        "MemoGrafter append ingest queue enqueue timed out.",
+      );
+      this.ensureWorker();
+    } catch (error) {
+      console.warn("MemoGrafter append ingest queue enqueue failed:", error);
+      throw error;
+    }
+  }
+
   async enqueueText(text: string, sessionId: string, options: IngestPipelineOptions = {}): Promise<void> {
     try {
       await this.withTimeout(
@@ -146,6 +173,11 @@ export class IngestQueue {
         try {
           if (job.data.kind === "text") {
             await this.pipeline.runText(job.data.text, job.data.sessionId, job.data.options ?? {});
+            return;
+          }
+
+          if (job.data.kind === "append") {
+            await this.pipeline.append(job.data.messages, job.data.sessionId, job.data.options ?? {});
             return;
           }
 
@@ -209,7 +241,7 @@ export class IngestQueue {
 }
 
 export function countIngestJobMessages(data: IngestJobData): number {
-  return data.kind === "messages" ? data.messages.length : splitTextForIngestion(data.text).length;
+  return data.kind === "text" ? splitTextForIngestion(data.text).length : data.messages.length;
 }
 
 export function serializedIngestJobBytes(data: IngestJobData): number {
