@@ -1580,7 +1580,7 @@ export function renderStudioHtml(state: StudioFrontendState): string {
         <div class="workspace-tabs" role="tablist" aria-label="Session workspace tabs">
           <button class="tab-button" id="tab-graph" type="button" role="tab" aria-controls="workspace-panel" aria-selected="true" data-tab="graph">Graph</button>
           <button class="tab-button" id="tab-tables" type="button" role="tab" aria-controls="workspace-panel" aria-selected="false" data-tab="tables">Tables</button>
-          <button class="tab-button" id="tab-preview" type="button" role="tab" aria-controls="workspace-panel" aria-selected="false" data-tab="preview">Prompt Preview</button>
+          <button class="tab-button" id="tab-preview" type="button" role="tab" aria-controls="workspace-panel" aria-selected="false" data-tab="preview">Invoke Preview</button>
         </div>
 
         <div class="graph-search" id="graph-search" aria-label="Graph search">
@@ -1687,12 +1687,16 @@ export function renderStudioHtml(state: StudioFrontendState): string {
           collapsedGraphClusters: {},
           preview: {
             query: "",
-            mode: "graft",
+            profile: "memo-grafter-agent",
+            fleetMemoryMode: "local",
+            subview: "messages",
             result: null,
             error: null,
             loading: false,
             requestId: 0,
-            copied: false
+            copied: false,
+            completionLoading: false,
+            completionResult: null
           },
           loadingSessions: false,
           loadingGraph: false,
@@ -2153,7 +2157,7 @@ export function renderStudioHtml(state: StudioFrontendState): string {
 
         function tabLabel(tab) {
           if (tab === "tables") return "Tables";
-          if (tab === "preview") return "Prompt Preview";
+          if (tab === "preview") return "Invoke Preview";
           return "Graph";
         }
 
@@ -2591,27 +2595,28 @@ export function renderStudioHtml(state: StudioFrontendState): string {
         }
 
         function previewStatus() {
-          return initialState.previewStatus || { available: false, reason: "Prompt Preview is not configured." };
+          return initialState.previewStatus || { available: false, reason: "Invoke Preview is not configured." };
         }
 
         function renderPreviewWorkspace(status) {
           return '<div class="preview-workspace">' +
             '<section class="panel">' +
-              '<div class="panel-header"><p class="panel-title">Prompt Preview</p><span class="badge">' + escapeHtml(status.available ? "available" : "unavailable") + '</span></div>' +
+              '<div class="panel-header"><p class="panel-title">Invoke Preview</p><span class="badge">Database-backed preview</span><span class="badge">' + escapeHtml(status.available ? "available" : "unavailable") + '</span></div>' +
               '<div class="details">' +
                 '<div class="preview-form">' +
-                  '<div class="field"><label for="preview-query">Query</label><textarea id="preview-query" ' + (!status.available ? "disabled" : "") + ' placeholder="Ask what context should be recalled or grafted...">' + escapeHtml(state.preview.query) + '</textarea></div>' +
+                  '<div class="field"><label for="preview-query">User query</label><textarea id="preview-query" ' + (!status.available ? "disabled" : "") + ' placeholder="Enter the message that would be passed to invoke()...">' + escapeHtml(state.preview.query) + '</textarea></div>' +
                   '<div class="table-browser-controls">' +
-                    '<div class="field"><label for="preview-mode">Mode</label><select id="preview-mode" ' + (!status.available ? "disabled" : "") + '>' +
-                      '<option value="graft"' + (state.preview.mode === "graft" ? " selected" : "") + '>graft</option>' +
-                      '<option value="recall"' + (state.preview.mode === "recall" ? " selected" : "") + '>recall</option>' +
+                    '<div class="field"><label for="preview-profile">Invocation profile</label><select id="preview-profile" ' + (!status.available ? "disabled" : "") + '>' +
+                      '<option value="memo-grafter-agent"' + (state.preview.profile === "memo-grafter-agent" ? " selected" : "") + '>MemoGrafterAgent</option>' +
+                      '<option value="fleet-worker"' + (state.preview.profile === "fleet-worker" ? " selected" : "") + '>Fleet Worker</option>' +
                     '</select></div>' +
+                    (state.preview.profile === "fleet-worker" ? '<div class="field"><label for="fleet-memory-mode">Memory mode</label><select id="fleet-memory-mode"><option value="local"' + (state.preview.fleetMemoryMode === "local" ? " selected" : "") + '>local</option><option value="fleet"' + (state.preview.fleetMemoryMode === "fleet" ? " selected" : "") + '>fleet</option><option value="both"' + (state.preview.fleetMemoryMode === "both" ? " selected" : "") + '>both</option></select></div>' : '') +
                     '<div class="preview-actions">' +
                       '<button class="primary-button" type="button" id="run-preview"' + (!status.available || state.preview.loading || !state.preview.query.trim() ? " disabled" : "") + '>Run preview</button>' +
                       '<button class="icon-button" type="button" id="clear-preview"' + (state.preview.loading ? " disabled" : "") + '>Clear</button>' +
                     '</div>' +
                   '</div>' +
-                  '<p class="subtle">' + escapeHtml(status.available ? "Generates a read-only preview. No memory writes are performed." : (status.reason || "Prompt Preview is unavailable.")) + '</p>' +
+                  '<p class="subtle">' + escapeHtml(status.available ? "Framework-level { system, messages } request. No LLM call or memory write is performed. Persisted history is used because live agent history is process-local." : (status.reason || "Invoke Preview is unavailable.")) + '</p>' +
                   (state.preview.error ? '<div class="action-status error" role="alert">' + escapeHtml(state.preview.error) + '</div>' : "") +
                 '</div>' +
               '</div>' +
@@ -2622,41 +2627,70 @@ export function renderStudioHtml(state: StudioFrontendState): string {
 
         function renderPreviewResult(status) {
           if (!status.available) {
-            return '<div class="workspace-placeholder" role="status"><div class="placeholder-card"><h2 class="panel-title">Prompt Preview unavailable</h2><p class="subtle">' + escapeHtml(status.reason || "Configure an embedder to enable prompt preview.") + '</p></div></div>';
+            return '<div class="workspace-placeholder" role="status"><div class="placeholder-card"><h2 class="panel-title">Invoke Preview unavailable</h2><p class="subtle">' + escapeHtml(status.reason || "Configure an embedder to enable invoke preview.") + '</p></div></div>';
           }
 
           if (state.preview.loading) {
-            return '<div class="loading-state" role="status" aria-live="polite">Generating prompt preview...</div>';
+            return '<div class="loading-state" role="status" aria-live="polite">Planning invocation...</div>';
           }
 
           const result = state.preview.result;
           if (!result) {
-            return '<div class="workspace-placeholder" role="status"><div class="placeholder-card"><h2 class="panel-title">No preview yet</h2><p class="subtle">Enter a query, choose graft or recall, and run preview to inspect the exact generated prompt.</p></div></div>';
+            return '<div class="workspace-placeholder" role="status"><div class="placeholder-card"><h2 class="panel-title">No preview yet</h2><p class="subtle">Enter a query and generate the request MemoGrafter would prepare for the selected runtime.</p></div></div>';
           }
 
-          const prompt = result.systemPrompt || "";
+          const statusText = result.retrieval && result.retrieval.status ? result.retrieval.status : "unknown";
           return '<section class="preview-result">' +
             '<div class="preview-result-header">' +
               '<div class="preview-summary">' +
-                '<span class="badge">' + escapeHtml(result.mode || state.preview.mode) + '</span>' +
+                '<span class="badge">' + escapeHtml(result.profile) + '</span>' +
+                '<span class="badge">' + escapeHtml(statusText) + '</span>' +
                 '<span class="' + tokenUsageClass(result) + '">' + escapeHtml(tokenUsageText(result)) + '</span>' +
                 '<span class="badge">' + escapeHtml(previewCountsText(result)) + '</span>' +
               '</div>' +
               '<div class="preview-actions">' +
-                '<button class="icon-button" type="button" id="copy-preview"' + (!prompt ? " disabled" : "") + '>Copy prompt</button>' +
+                '<button class="icon-button" type="button" id="copy-preview">' + (state.preview.subview === "plain" ? "Copy plain text" : state.preview.subview === "messages" ? "Copy request JSON" : "Copy view") + '</button>' +
                 (state.preview.copied ? '<span class="subtle">Copied</span>' : "") +
               '</div>' +
             '</div>' +
-            '<pre class="prompt-preview-output" id="prompt-preview-output">' + escapeHtml(prompt || "No prompt content generated.") + '</pre>' +
+            '<p class="subtle">Framework-level MemoGrafter request; provider adapters may transform it. This is not a byte-for-byte provider payload.</p>' +
+            '<div class="preview-actions">' + [
+              ["context", "Context Selection"], ["messages", "Structured Messages"], ["plain", "Final Prompt — Plain Text"], ["memory", "Raw Memory Context"], ["retrieval", "Why These Memories?"]
+            ].map(function(item) { return '<button class="icon-button preview-subview" data-subview="' + item[0] + '" type="button" aria-pressed="' + (state.preview.subview === item[0]) + '">' + item[1] + '</button>'; }).join("") + '</div>' +
+            '<pre class="prompt-preview-output" id="prompt-preview-output">' + escapeHtml(previewSubviewText(result)) + '</pre>' +
+            renderCompletionPanel(result) +
           '</section>';
+        }
+
+        function previewSubviewText(result) {
+          if (state.preview.subview === "messages") return JSON.stringify(result.request || { system: "", messages: [] }, null, 2);
+          if (state.preview.subview === "plain") return result.plainText || "No readable request rendering was generated.";
+          if (state.preview.subview === "memory") return (result.memoryContext && result.memoryContext.content) || (result.retrieval && result.retrieval.status === "failed" ? "Retrieval failed: " + result.retrieval.error.message : "No matching memory context was added.");
+          if (state.preview.subview === "context") return JSON.stringify({ baseSystemPrompt: result.baseSystemPrompt, conversationWindow: result.conversationWindow, userQuery: result.query, tokens: result.tokens }, null, 2);
+          return JSON.stringify(result.retrieval || {}, null, 2);
+        }
+
+        function renderCompletionPanel(result) {
+          const completion = (initialState.previewStatus && initialState.previewStatus.completion) || { available: false, reason: "Configure an LLM adapter and provider API key in mg.config.ts." };
+          const provider = [completion.provider, completion.model].filter(Boolean).join(" · ");
+          const response = state.preview.completionResult;
+          return '<section class="panel"><div class="panel-header"><p class="panel-title">Test with configured LLM</p><span class="badge">' + escapeHtml(completion.available ? (provider || "available") : "unavailable") + '</span></div><div class="details">' +
+            '<p class="subtle">This sends the displayed request to your configured LLM using the provider API key available to MemoGrafter Studio. Provider usage charges may apply. Preview generation alone never calls the LLM.</p>' +
+            (!completion.available ? '<div class="action-status warning">' + escapeHtml(completion.reason || "LLM execution is unavailable.") + '</div>' : '') +
+            '<div class="preview-actions"><button class="primary-button" type="button" id="run-completion"' + (!completion.available || state.preview.completionLoading ? " disabled" : "") + '>' + (state.preview.completionLoading ? "Running…" : "Run with LLM") + '</button></div>' +
+            (response ? '<div class="detail-section"><h2 class="detail-section-title">LLM Response</h2><p class="subtle">Not persisted to conversation history or memory · ' + numberText(response.durationMs) + ' ms</p><pre class="prompt-preview-output">' + escapeHtml(response.response) + '</pre><button class="icon-button" id="copy-completion" type="button">Copy response</button></div>' : '') +
+          '</div></section>';
         }
 
         function bindPreviewEvents(status) {
           const queryInput = document.getElementById("preview-query");
-          const modeSelect = document.getElementById("preview-mode");
+          const profileSelect = document.getElementById("preview-profile");
+          const fleetModeSelect = document.getElementById("fleet-memory-mode");
           const runButton = document.getElementById("run-preview");
           const clearButton = document.getElementById("clear-preview");
           const copyButton = document.getElementById("copy-preview");
+          const completionButton = document.getElementById("run-completion");
+          const copyCompletionButton = document.getElementById("copy-completion");
 
           if (queryInput) {
             queryInput.addEventListener("input", () => {
@@ -2669,14 +2703,16 @@ export function renderStudioHtml(state: StudioFrontendState): string {
             });
           }
 
-          if (modeSelect) {
-            modeSelect.addEventListener("change", () => {
-              state.preview.mode = modeSelect.value;
+          if (profileSelect) {
+            profileSelect.addEventListener("change", () => {
+              state.preview.profile = profileSelect.value;
               state.preview.error = null;
               state.preview.copied = false;
               renderWorkspace();
             });
           }
+          if (fleetModeSelect) fleetModeSelect.addEventListener("change", () => { state.preview.fleetMemoryMode = fleetModeSelect.value; state.preview.result = null; renderWorkspace(); });
+          document.querySelectorAll(".preview-subview").forEach(function(button) { button.addEventListener("click", function() { state.preview.subview = button.dataset.subview; renderWorkspace(); }); });
 
           if (runButton) {
             runButton.addEventListener("click", () => {
@@ -2687,6 +2723,7 @@ export function renderStudioHtml(state: StudioFrontendState): string {
           if (clearButton) {
             clearButton.addEventListener("click", () => {
               state.preview.result = null;
+              state.preview.completionResult = null;
               state.preview.error = null;
               state.preview.copied = false;
               renderWorkspace();
@@ -2696,6 +2733,8 @@ export function renderStudioHtml(state: StudioFrontendState): string {
           if (copyButton) {
             copyButton.addEventListener("click", () => void copyPreviewPrompt());
           }
+          if (completionButton) completionButton.addEventListener("click", () => void runPreviewCompletion());
+          if (copyCompletionButton) copyCompletionButton.addEventListener("click", () => void navigator.clipboard.writeText(state.preview.completionResult.response));
         }
 
         async function runPreview() {
@@ -2712,16 +2751,18 @@ export function renderStudioHtml(state: StudioFrontendState): string {
 
           try {
             const body = {
-              mode: state.preview.mode,
-              query
+              profile: state.preview.profile,
+              fleetMemoryMode: state.preview.fleetMemoryMode,
+              query: query
             };
-            const result = await fetchJson("/api/sessions/" + encodeURIComponent(state.selectedSessionId) + "/preview", {
+            const result = await fetchJson("/api/sessions/" + encodeURIComponent(state.selectedSessionId) + "/invocation-preview", {
               method: "POST",
               headers: { "content-type": "application/json" },
               body: JSON.stringify(body)
             });
             if (state.preview.requestId !== requestId) return;
             state.preview.result = result;
+            state.preview.completionResult = null;
             state.tabs.preview.loadedAt = new Date().toISOString();
           } catch (error) {
             if (state.preview.requestId !== requestId) return;
@@ -2736,38 +2777,54 @@ export function renderStudioHtml(state: StudioFrontendState): string {
         }
 
         async function copyPreviewPrompt() {
-          const prompt = state.preview.result && state.preview.result.systemPrompt;
-          if (!prompt) return;
+          const result = state.preview.result;
+          if (!result) return;
 
           try {
-            await navigator.clipboard.writeText(prompt);
+            await navigator.clipboard.writeText(previewSubviewText(result));
             state.preview.copied = true;
           } catch {
-            state.preview.error = "Could not copy prompt to clipboard.";
+            state.preview.error = "Could not copy request JSON to clipboard.";
           }
           renderWorkspace();
         }
 
+        async function runPreviewCompletion() {
+          const result = state.preview.result;
+          if (!result || !result.planId || state.preview.completionLoading) return;
+          const confirmed = window.confirm("Run this invocation?\\n\\nThis will send the displayed system prompt and messages to the configured LLM using your API key. Provider usage charges may apply.");
+          if (!confirmed) return;
+          state.preview.completionLoading = true;
+          state.preview.error = null;
+          renderWorkspace();
+          try {
+            state.preview.completionResult = await fetchJson("/api/sessions/" + encodeURIComponent(state.selectedSessionId) + "/invocation-preview/" + encodeURIComponent(result.planId) + "/complete", { method: "POST" });
+          } catch (error) {
+            state.preview.error = error.message || String(error);
+          } finally {
+            state.preview.completionLoading = false;
+            renderWorkspace();
+          }
+        }
+
         function tokenUsageText(result) {
-          const tokenCount = result && typeof result.tokenCount === "number" ? result.tokenCount : 0;
-          const tokenBudget = result && typeof result.tokenBudget === "number" ? result.tokenBudget : null;
+          const tokenCount = result && result.tokens ? result.tokens.total : 0;
+          const tokenBudget = result && result.tokens ? result.tokens.budget : null;
           if (!tokenBudget) return "Tokens: " + numberText(tokenCount);
           const percent = Math.round((tokenCount / tokenBudget) * 100);
           return "Tokens: " + numberText(tokenCount) + " / " + numberText(tokenBudget) + " · " + percent + "%";
         }
 
         function tokenUsageClass(result) {
-          const overBudget = result && typeof result.tokenBudget === "number" && typeof result.tokenCount === "number" && result.tokenCount > result.tokenBudget;
+          const overBudget = result && result.tokens && result.tokens.budget && result.tokens.total > result.tokens.budget;
           return "badge token-meter" + (overBudget ? " warning" : "");
         }
 
         function previewCountsText(result) {
           if (!result) return "0 items";
-          const nodes = Array.isArray(result.nodes) ? result.nodes.length : 0;
-          const facts = Array.isArray(result.facts) ? result.facts.length : 0;
-          const memories = Array.isArray(result.memories) ? result.memories.length : 0;
-          if ((result.mode || state.preview.mode) === "recall") return numberText(facts) + " facts · " + numberText(nodes) + " nodes";
-          return numberText(nodes) + " nodes" + (memories ? " · " + numberText(memories) + " memories" : "");
+          const nodes = result.retrieval && Array.isArray(result.retrieval.topics) ? result.retrieval.topics.length : 0;
+          const memories = result.retrieval && Array.isArray(result.retrieval.memories) ? result.retrieval.memories.length : 0;
+          return numberText(memories) + " memories · " + numberText(nodes) + " topics";
         }
 
         function handleGraphSearchKeydown(event) {

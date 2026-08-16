@@ -4,7 +4,7 @@ export {
   UnavailableStudioPreviewService,
 } from "./StudioPreviewService.js";
 export type {
-  StudioPreviewMode,
+  StudioPreviewCompletionResult,
   StudioPreviewRequest,
   StudioPreviewResult,
   StudioPreviewService,

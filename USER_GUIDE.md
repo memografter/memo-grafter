@@ -83,7 +83,7 @@ npx memo-grafter studio
 `memo-grafter init` is required before `migrate` or `studio`. Doctor does not require initialization to start; it reports missing project configuration as a failed check instead of aborting. Init creates local project files only:
 
 - `src/memo-grafter/mg-schema.ts`: generated MemoGrafter schema reference for `mg_*` tables. This file is regenerated on every `init` run.
-- `src/memo-grafter/mg.config.ts`: user-editable MemoGrafter CLI config. The generated config includes database resolution, commented Redis cache/queue examples, and an OpenAI-compatible embedder scaffold for Studio Prompt Preview. Set `OPENAI_API_KEY` to enable preview, and optionally set `MEMO_GRAFTER_EMBEDDING_MODEL`.
+- `src/memo-grafter/mg.config.ts`: user-editable MemoGrafter CLI config. The generated config includes database resolution, commented Redis cache/queue examples, and an OpenAI-compatible embedder scaffold for Studio Invoke Preview. Set `OPENAI_API_KEY` to enable preview, and optionally set `MEMO_GRAFTER_EMBEDDING_MODEL`.
 
 `memo-grafter init` does not create, relocate, or modify an application schema file. Keep application models and tables in the location expected by Prisma, Drizzle, raw SQL migrations, or your existing database tool.
 
@@ -137,19 +137,19 @@ npx memo-grafter studio --db postgres://postgres:postgres@localhost:5432/memo_gr
 
 Studio verifies the MemoGrafter schema, prints database connection status, session count, and the local URL, then opens your browser. It starts on `http://localhost:2891` or the next available port and keeps running until you stop it with `Ctrl+C`.
 
-Studio's database and inspection features do not require the OpenAI, Anthropic, or Gemini SDKs. The CLI loads provider-independent `memo-grafter/store` and `memo-grafter/studio` entry points. Install a provider SDK only when your application or Studio Prompt Preview explicitly uses that provider's adapter.
+Studio's database and inspection features do not require the OpenAI, Anthropic, or Gemini SDKs. The CLI loads provider-independent `memo-grafter/store` and `memo-grafter/studio` entry points. Install a provider SDK only when your application or Studio Invoke Preview explicitly uses that provider's adapter.
 
 The Studio landing page shows sessions first. Select a session to open its workspace:
 
 - **Graph:** shows topic nodes as the stable graph backbone. Memories are shown only for the selected topic, which keeps large sessions readable. Use node type, tag, and lifecycle filters to narrow the graph. Selecting a topic shows its summary, source metadata, lifecycle state, and connected memories. Selecting a memory shows its structured fact fields, confidence, lifecycle flags, source metadata, and related, conflict, or update edges.
 - **Tables:** provides a read-only browser for the underlying `mg_*` tables using their original table names. Use the table selector and pagination controls to inspect rows; long cell values can be expanded in place.
-- **Prompt Preview:** runs a read-only graft or recall query simulation for the selected session. It displays the exact generated system prompt and token usage. Prompt Preview requires an embedder in `mg.config.ts`; the generated OpenAI-compatible scaffold uses `fetch` and works when `OPENAI_API_KEY` is available, without requiring the `openai` package. When no embedder is configured, only Prompt Preview is unavailable.
+- **Invoke Preview:** builds the same framework-level `{ system, messages }` request plan used by `MemoGrafterAgent` or Fleet Worker invocation without calling the LLM. It shows context selection, structured messages, a readable plain-text rendering, raw memory context, retrieval explanation, and token usage. Persisted history is labelled **Database-backed preview** because live agent history is process-local. Provider adapters may transform the request, so Studio does not claim byte-for-byte provider payload equivalence. Invoke Preview requires an embedder; other Studio views remain available without one. An optional **Run with LLM** action executes the displayed short-lived plan using the server-side configured adapter and API key; Studio warns that provider charges may apply, and the returned response is not persisted or ingested.
 
 For an active topic, **Graft to session** copies the topic and its active memories into one or more selected sessions. Studio first shows the active memories that will be copied, lifecycle-filtered memories that will be omitted, and duplicate targets that will be skipped. A graft is an independent copy rather than a synchronized reference. The copied topic records its source-session provenance and can be removed from its target session without changing the source.
 
 The node details panel also provides the supported maintenance action: suppressing a topic. Studio refreshes the selected graph after a successful suppression and keeps the affected node selected so its new lifecycle state is visible. Use the refresh controls to reload the session list or active tab after your application writes more memory.
 
-Studio also hosts an internal REST API for its own views, including session listing, graph reads, table reads, memory search, Prompt Preview, topic graft preview/copy/removal, and topic suppression. This API is local tooling infrastructure, not a public web service. Authentication, multi-user access control, and internet exposure are out of scope; do not bind Studio to a public interface or proxy it as an application API.
+Studio also hosts an internal REST API for its own views, including session listing, graph reads, table reads, memory search, Invoke Preview, topic graft preview/copy/removal, and topic suppression. This API is local tooling infrastructure, not a public web service. Authentication, multi-user access control, and internet exposure are out of scope; do not bind Studio to a public interface or proxy it as an application API.
 
 Current v1 tables:
 

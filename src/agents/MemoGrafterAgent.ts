@@ -26,6 +26,8 @@ import { normalizeTags } from "../utils/tags.js";
 import { splitTextForIngestion } from "../utils/text/splitTextForIngestion.js";
 import { resolveMemoGrafterConfig } from "../config.js";
 import type { MemoGrafterConfigOverrides, MemoGrafterConfigSource } from "../config.js";
+import { buildInvocationPlan } from "../invocation/InvocationPlanner.js";
+import type { PlannedMemoryContext } from "../invocation/types.js";
 
 export class MemoGrafterAgent {
   private readonly core: MemoGrafter;
@@ -71,17 +73,18 @@ export class MemoGrafterAgent {
   }
 
   async invoke(userMessage: string): Promise<string> {
-    const memoryContext = await this._buildMemoryContext(userMessage, {
-      limit: this.recallLimit,
-      minSimilarity: this.recallMinSimilarity,
+    const plan = await buildInvocationPlan(this.sessionId, userMessage, {
+      profile: "memo-grafter-agent",
+      history: this.history,
+      historySource: "process-local",
+      baseSystemPrompt: this.baseSystemPrompt,
+      recentWindowSize: this.recentWindowSize,
+      buildMemoryContext: () => this._buildMemoryContext(userMessage, {
+        limit: this.recallLimit,
+        minSimilarity: this.recallMinSimilarity,
+      }),
     });
-    const recentMessages = this.history.slice(-this.recentWindowSize);
-    const messages: Message[] = [
-      ...(memoryContext ? [{ role: "system" as const, content: memoryContext }] : []),
-      ...recentMessages,
-      { role: "user", content: userMessage },
-    ];
-    const response = await this.core.llm.complete(messages, this.baseSystemPrompt);
+    const response = await this.core.llm.complete(plan.request.messages, plan.request.system);
 
     this.history.push({ role: "user", content: userMessage });
     this.history.push({ role: "assistant", content: response });
@@ -332,22 +335,51 @@ export class MemoGrafterAgent {
   private async _buildMemoryContext(
     query: string,
     options: { limit: number; minSimilarity: number },
-  ): Promise<string | null> {
+  ): Promise<PlannedMemoryContext> {
+    const empty = (status: "not-applicable" | "no-match" | "failed", error?: unknown): PlannedMemoryContext => ({
+      placement: "message",
+      retrieval: {
+        status,
+        strategy: "recall",
+        topics: [],
+        memories: [],
+        limit: options.limit,
+        minSimilarity: options.minSimilarity,
+        sessionIds: [this.sessionId],
+        ...(error ? { error: { message: error instanceof Error ? error.message : String(error), recoverable: true } } : {}),
+      },
+      memoryContext: { content: null, tokenCount: 0 },
+    });
     try {
       const nodeCount = await this.core.store.getSessionNodeCount(this.sessionId);
-      if (nodeCount === 0) return null;
+      if (nodeCount === 0) return empty("not-applicable");
 
       const result = await this.recall(query, {
         limit: options.limit,
         minSimilarity: options.minSimilarity,
       });
 
-      if (result.facts.length === 0) return null;
-
-      return result.systemPrompt;
+      if (result.facts.length === 0) return empty("no-match");
+      return {
+        placement: "message",
+        retrieval: {
+          status: "matched",
+          strategy: "recall",
+          topics: result.nodes,
+          memories: result.facts,
+          limit: options.limit,
+          minSimilarity: options.minSimilarity,
+          sessionIds: [this.sessionId],
+        },
+        memoryContext: {
+          content: result.systemPrompt,
+          tokenCount: result.tokenCount,
+          ...(result.tokenBudget !== undefined ? { tokenBudget: result.tokenBudget } : {}),
+        },
+      };
     } catch (error: unknown) {
       console.warn("MemoGrafter recall warning:", error);
-      return null;
+      return empty("failed", error);
     }
   }
 

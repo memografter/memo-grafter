@@ -2,8 +2,11 @@ import { pathToFileURL } from "node:url";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { MissingDatabaseConfigurationError } from "./database-errors.js";
+interface Message { role: "system" | "user" | "assistant"; content: string }
+interface LLMAdapter { complete(messages: Message[], system?: string): Promise<string> }
 
 export interface MemoGrafterCliConfig {
+  llm?: LLMAdapter;
   db?: {
     connectionString?: string;
   };
@@ -34,6 +37,9 @@ export interface MemoGrafterCliConfig {
 }
 
 export interface StudioRuntimeConfig {
+  llm?: LLMAdapter;
+  llmProvider?: string;
+  llmModel?: string;
   embedder?: MemoGrafterCliConfig["embedder"];
   graph?: MemoGrafterCliConfig["graph"];
   inject?: MemoGrafterCliConfig["inject"];
@@ -109,6 +115,9 @@ export async function resolveStudioRuntimeConfig(options: {
   if (!config) return null;
 
   return {
+    ...(config.llm !== undefined ? { llm: config.llm } : {}),
+    ...(config.llm !== undefined ? { llmProvider: process.env.OPENAI_API_KEY ? "OpenAI" : "Configured provider" } : {}),
+    ...(config.llm !== undefined && process.env.MEMO_GRAFTER_LLM_MODEL ? { llmModel: process.env.MEMO_GRAFTER_LLM_MODEL } : {}),
     ...(config.embedder !== undefined ? { embedder: config.embedder } : {}),
     ...(config.graph !== undefined ? { graph: config.graph } : {}),
     ...(config.inject !== undefined ? { inject: config.inject } : {}),
@@ -176,6 +185,14 @@ function parseTypeScriptConfig(source: string): MemoGrafterCliConfig {
     config.embedder = createOpenAiEmbedder(
       process.env.OPENAI_API_KEY,
       process.env.MEMO_GRAFTER_EMBEDDING_MODEL ?? "text-embedding-3-small",
+    );
+  }
+
+  const hasOpenAiLlmScaffold = /\bllm\s*:\s*new\s+OpenAILLMAdapter\s*\(/.test(activeSource);
+  if (hasOpenAiLlmScaffold && process.env.OPENAI_API_KEY) {
+    config.llm = createOpenAiLlm(
+      process.env.OPENAI_API_KEY,
+      process.env.MEMO_GRAFTER_LLM_MODEL ?? "gpt-4o",
     );
   }
 
@@ -292,6 +309,26 @@ function createOpenAiEmbedder(apiKey: string, model: string): NonNullable<MemoGr
       const embedding = body.data?.[0]?.embedding;
       if (!embedding) throw new Error("OpenAI embeddings response did not include an embedding.");
       return embedding;
+    },
+  };
+}
+
+function createOpenAiLlm(apiKey: string, model: string): LLMAdapter {
+  return {
+    async complete(messages: Message[], system?: string): Promise<string> {
+      const response = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model,
+          messages: [...(system ? [{ role: "system" as const, content: system }] : []), ...messages],
+        }),
+      });
+      if (!response.ok) throw new Error(`OpenAI completion request failed with status ${response.status}.`);
+      const body = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+      const content = body.choices?.[0]?.message?.content;
+      if (typeof content !== "string") throw new Error("OpenAI completion response did not include text.");
+      return content;
     },
   };
 }
