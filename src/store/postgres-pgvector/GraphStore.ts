@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import postgres, { type Sql } from "postgres";
 import type { FleetAgentRecord, GraphStore } from "../GraphStore.js";
 import type { DatabaseQueryOperation, MemoGrafterDatabaseTelemetry } from "../../core/types.js";
-import type { GraftRegistryEntry, MemoryDiff, MemoryDiffField, MemoryEdge, MemoryHistoryEntry, MemoryHistoryOptions, MemoryHistoryResult, MemoryHistoryStatus, MemoryNode, MemoryNodeInsert, Message, SessionIngestState, TagFilterOptions, TopicEdge, TopicNode, TopicSegment } from "../../core/types.js";
+import type { GraftRegistryEntry, GraftTopicsRequest, GraftTopicsResult, MemoryDiff, MemoryDiffField, MemoryEdge, MemoryHistoryEntry, MemoryHistoryOptions, MemoryHistoryResult, MemoryHistoryStatus, MemoryNode, MemoryNodeInsert, Message, SessionIngestState, TagFilterOptions, TopicEdge, TopicNode, TopicSegment } from "../../core/types.js";
 import {
   memoGrafterCurrentMigrationVersion,
   memoGrafterExtensionNames,
@@ -1448,6 +1448,145 @@ export class PostgresGraphStore implements GraphStore {
     return rows.map((row) => this.rowToGraftRegistryEntry(row));
   }
 
+  async graftTopics(request: GraftTopicsRequest): Promise<GraftTopicsResult> {
+    if (request.duplicatePolicy !== "skip") throw new Error(`Unsupported graft duplicate policy '${request.duplicatePolicy}'.`);
+    if (request.sourceSessionId === request.targetSessionId) throw new Error("A topic cannot be grafted into its source session.");
+    if (request.topicIds.length !== 1) throw new Error("Studio topic grafting currently requires exactly one topic ID.");
+
+    const sourceTopicId = request.topicIds[0]!;
+    return this.sql.begin(async (transaction) => {
+      await transaction`SELECT pg_advisory_xact_lock(hashtext(${`memo-grafter-session:${request.targetSessionId}`}))`;
+      const sourceRows = await transaction<TopicNodeRow[]>`
+        SELECT * FROM mg_topic_nodes
+        WHERE id = ${sourceTopicId} AND session_id = ${request.sourceSessionId} AND suppressed = FALSE
+        LIMIT 1
+      `;
+      const source = sourceRows[0] ? this.rowToNode(sourceRows[0]) : null;
+      if (!source) throw new Error(`Active topic '${sourceTopicId}' was not found in source session '${request.sourceSessionId}'.`);
+
+      const existing = await transaction<GraftRegistryRow[]>`
+        SELECT * FROM mg_graft_registry
+        WHERE session_id = ${request.targetSessionId}
+          AND source_session_id = ${request.sourceSessionId}
+          AND source_node_id = ${sourceTopicId}
+        LIMIT 1
+      `;
+      if (existing[0]) {
+        return {
+          sourceSessionId: request.sourceSessionId,
+          targetSessionId: request.targetSessionId,
+          sourceTopicId,
+          status: "skipped" as const,
+          copiedTopics: [],
+          copiedMemoryCount: 0,
+          existingTargetTopicId: existing[0].node_id,
+        };
+      }
+
+      const nextMessageRows = await transaction<{ next_index: number }[]>`
+        SELECT COALESCE(MAX(message_index), -1) + 1 AS next_index FROM mg_message_buffer
+        WHERE session_id = ${request.targetSessionId}
+      `;
+      const nextOrderRows = await transaction<{ next_order: number }[]>`
+        SELECT COALESCE(MAX(topic_order), -1) + 1 AS next_order FROM mg_topic_nodes
+        WHERE session_id = ${request.targetSessionId}
+      `;
+      const messageIndex = nextMessageRows[0]?.next_index ?? 0;
+      const topicOrder = nextOrderRows[0]?.next_order ?? 0;
+      const segmentId = randomUUID();
+      const copiedTopicId = randomUUID();
+      const createdAt = new Date();
+
+      await transaction`
+        INSERT INTO mg_message_buffer (session_id, message_index, role, content)
+        VALUES (${request.targetSessionId}, ${messageIndex}, 'assistant', ${this.formatGraftedMemoryMessage(source)})
+      `;
+      await transaction`
+        INSERT INTO mg_segments (id, session_id, start_index, end_index, topic_order, drift_score, created_at)
+        VALUES (${segmentId}, ${request.targetSessionId}, ${messageIndex}, ${messageIndex}, ${topicOrder}, ${source.driftScore}, ${createdAt})
+      `;
+      await transaction`
+        INSERT INTO mg_topic_nodes (
+          id, session_id, segment_id, label, summary, embedding, tags, source,
+          message_range, topic_order, drift_score, agent_color, fleet_id, agent_id, created_at
+        ) VALUES (
+          ${copiedTopicId}, ${request.targetSessionId}, ${segmentId}, ${source.label}, ${source.summary},
+          ${toVectorLiteral(source.embedding)}::vector, ${transaction.array(normalizeTags(source.tags))}::text[],
+          ${source.source ?? null}, ${[messageIndex, messageIndex]}, ${topicOrder}, ${source.driftScore},
+          ${source.agentColor}, ${source.fleetId}, ${source.agentId}, ${createdAt}
+        )
+      `;
+      const copiedMemories = await transaction<{ id: string }[]>`
+        INSERT INTO mg_memory_nodes (
+          segment_id, topic_node_id, agent_id, session_id, memory_type, source_type,
+          subject, predicate, value, confidence, embedding, tags, source, source_url,
+          source_title, superseded_by, decayed, forgotten, has_conflict, agent_color, fleet_id
+        )
+        SELECT
+          ${segmentId}, ${copiedTopicId}, agent_id, ${request.targetSessionId}, memory_type, source_type,
+          subject, predicate, value, confidence, embedding, tags, source, source_url,
+          source_title, NULL, FALSE, FALSE, has_conflict, agent_color, fleet_id
+        FROM mg_memory_nodes
+        WHERE topic_node_id = ${sourceTopicId} AND session_id = ${request.sourceSessionId}
+          AND forgotten = FALSE AND decayed = FALSE AND superseded_by IS NULL
+        RETURNING id
+      `;
+      await transaction`
+        INSERT INTO mg_topic_edges (src_id, dst_id, weight, type)
+        VALUES (${copiedTopicId}, ${sourceTopicId}, 1, 'grafted')
+      `;
+      await transaction`
+        INSERT INTO mg_graft_registry (session_id, node_id, source_session_id, source_node_id)
+        VALUES (${request.targetSessionId}, ${copiedTopicId}, ${request.sourceSessionId}, ${sourceTopicId})
+      `;
+
+      const copy: TopicNode = {
+        ...source, id: copiedTopicId, sessionId: request.targetSessionId, segmentId,
+        messageRange: [messageIndex, messageIndex], topicOrder, createdAt,
+      };
+      return {
+        sourceSessionId: request.sourceSessionId,
+        targetSessionId: request.targetSessionId,
+        sourceTopicId,
+        status: "copied" as const,
+        copiedTopics: [copy],
+        copiedMemoryCount: copiedMemories.length,
+      };
+    });
+  }
+
+  async removeGraftFromSession(targetSessionId: string, nodeId: string): Promise<GraftRegistryEntry | null> {
+    return this.sql.begin(async (transaction) => {
+      await transaction`SELECT pg_advisory_xact_lock(hashtext(${`memo-grafter-session:${targetSessionId}`}))`;
+      const registryRows = await transaction<GraftRegistryRow[]>`
+        SELECT * FROM mg_graft_registry WHERE session_id = ${targetSessionId} AND node_id = ${nodeId} LIMIT 1
+      `;
+      const registry = registryRows[0];
+      if (!registry) return null;
+      const segmentRows = await transaction<{ segment_id: string }[]>`
+        SELECT segment_id FROM mg_topic_nodes WHERE id = ${nodeId} AND session_id = ${targetSessionId}
+      `;
+      const segmentId = segmentRows[0]?.segment_id;
+      await transaction`
+        DELETE FROM mg_memory_edges
+        WHERE source_id IN (SELECT id FROM mg_memory_nodes WHERE topic_node_id = ${nodeId})
+           OR target_id IN (SELECT id FROM mg_memory_nodes WHERE topic_node_id = ${nodeId})
+      `;
+      await transaction`DELETE FROM mg_memory_nodes WHERE topic_node_id = ${nodeId}`;
+      await transaction`DELETE FROM mg_topic_edges WHERE src_id = ${nodeId} OR dst_id = ${nodeId}`;
+      await transaction`DELETE FROM mg_graft_registry WHERE node_id = ${nodeId}`;
+      await transaction`DELETE FROM mg_topic_nodes WHERE id = ${nodeId} AND session_id = ${targetSessionId}`;
+      if (segmentId) {
+        await transaction`
+          DELETE FROM mg_message_buffer WHERE session_id = ${targetSessionId}
+            AND message_index IN (SELECT start_index FROM mg_segments WHERE id = ${segmentId})
+        `;
+        await transaction`DELETE FROM mg_segments WHERE id = ${segmentId}`;
+      }
+      return this.rowToGraftRegistryEntry(registry);
+    });
+  }
+
   async deleteGraftRegistry(nodeId: string): Promise<void> {
     await this.sql`
       DELETE FROM mg_graft_registry
@@ -1974,6 +2113,16 @@ export class PostgresGraphStore implements GraphStore {
     await this.sql`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_graft_registry_node_unique
       ON mg_graft_registry(node_id)
+    `;
+
+    await this.sql`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_graft_registry_source_target_unique
+      ON mg_graft_registry(session_id, source_session_id, source_node_id)
+    `;
+
+    await this.sql`
+      CREATE INDEX IF NOT EXISTS idx_graft_registry_source
+      ON mg_graft_registry(source_session_id, source_node_id)
     `;
 
     await this.sql`

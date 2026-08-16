@@ -14,6 +14,45 @@ export interface StudioApiStore {
   getMemoriesBySession(sessionId: string): Promise<unknown[]>;
   getMessagesBySession(sessionId: string, startIndex?: number, endIndex?: number): Promise<unknown[]>;
   suppressTopic(nodeId: string): Promise<boolean>;
+  getTopicNode(topicNodeId: string, sessionId?: string): Promise<StudioGraftTopic | null>;
+  getGraftRegistry(sessionId: string): Promise<StudioGraftRegistryEntry[]>;
+  graftTopics(request: StudioGraftTopicsRequest): Promise<StudioGraftTopicsResult>;
+  removeGraftFromSession(targetSessionId: string, nodeId: string): Promise<StudioGraftRegistryEntry | null>;
+}
+
+interface StudioGraftTopic {
+  id: string;
+  suppressed?: boolean;
+  [key: string]: unknown;
+}
+
+interface StudioGraftMemory {
+  topicNodeId: string;
+  forgotten?: boolean;
+  decayed: boolean;
+  supersededBy: string | null;
+  [key: string]: unknown;
+}
+
+interface StudioGraftRegistryEntry {
+  nodeId: string;
+  sourceSessionId: string;
+  sourceNodeId: string;
+  graftedAt: Date;
+  [key: string]: unknown;
+}
+
+interface StudioGraftTopicsRequest {
+  sourceSessionId: string;
+  targetSessionId: string;
+  topicIds: string[];
+  duplicatePolicy: "skip";
+}
+
+interface StudioGraftTopicsResult {
+  copiedTopics: Array<{ id: string }>;
+  existingTargetTopicId?: string;
+  [key: string]: unknown;
 }
 
 export interface StudioApiPreviewService {
@@ -147,6 +186,33 @@ export async function handleStudioApiRequest(
       return;
     }
 
+    if (collection === "grafts" && itemId === "preview" && route.segments.length === 4) {
+      if (method !== "POST") {
+        sendMethodNotAllowed(response, ["POST"]);
+        return;
+      }
+      await sendTopicGraftPreview(request, response, context, sessionId);
+      return;
+    }
+
+    if (collection === "grafts" && route.segments.length === 3) {
+      if (method !== "POST") {
+        sendMethodNotAllowed(response, ["POST"]);
+        return;
+      }
+      await executeTopicGraft(request, response, context, sessionId);
+      return;
+    }
+
+    if (collection === "grafts" && itemId && action === "remove" && route.segments.length === 5) {
+      if (method !== "POST") {
+        sendMethodNotAllowed(response, ["POST"]);
+        return;
+      }
+      await removeTopicGraft(response, context, sessionId, itemId);
+      return;
+    }
+
     if (collection === "search" && route.segments.length === 3) {
       if (method !== "GET") {
         sendMethodNotAllowed(response, ["GET"]);
@@ -229,12 +295,13 @@ async function sendSessionGraph(
     return;
   }
 
-  const [nodes, segments, edges, memories, memoryEdges] = await Promise.all([
+  const [nodes, segments, edges, memories, memoryEdges, graftRegistry] = await Promise.all([
     context.store.getNodesBySession(sessionId, { includeSuppressed: true }),
     context.store.getSegmentsBySession(sessionId),
     context.repository.getTopicEdgesBySession(sessionId),
     context.store.getMemoriesBySession(sessionId),
     context.repository.getMemoryEdgesBySession(sessionId),
+    context.store.getGraftRegistry(sessionId),
   ]);
 
   sendJson(response, 200, {
@@ -244,8 +311,146 @@ async function sendSessionGraph(
     edges,
     memories,
     memoryEdges,
+    graftRegistry,
     capturedAt: new Date().toISOString(),
   });
+}
+
+async function sendTopicGraftPreview(
+  request: IncomingMessage,
+  response: ServerResponse,
+  context: StudioApiContext,
+  sourceSessionId: string,
+): Promise<void> {
+  const input = await readGraftInput(request, response, context, sourceSessionId);
+  if (!input) return;
+  const topic = await context.store.getTopicNode(input.topicId, sourceSessionId);
+  if (!topic || topic.suppressed) {
+    sendJson(response, 404, { error: `Active topic '${input.topicId}' was not found in source session '${sourceSessionId}'.` });
+    return;
+  }
+  const memories = (await context.store.getMemoriesBySession(sourceSessionId) as StudioGraftMemory[])
+    .filter((memory) => memory.topicNodeId === input.topicId);
+  const activeMemories = memories.filter(isActiveMemory);
+  const omittedMemories = memories.filter((memory) => !isActiveMemory(memory)).map((memory) => ({
+    memory,
+    reasons: [
+      ...(memory.forgotten ? ["forgotten"] : []),
+      ...(memory.decayed ? ["decayed"] : []),
+      ...(memory.supersededBy != null ? ["superseded"] : []),
+    ],
+  }));
+  const targets = await Promise.all(input.targetSessionIds.map(async (targetSessionId) => {
+    const existing = (await context.store.getGraftRegistry(targetSessionId)).find((entry) =>
+      entry.sourceSessionId === sourceSessionId && entry.sourceNodeId === input.topicId
+    );
+    return {
+      targetSessionId,
+      duplicate: Boolean(existing),
+      ...(existing ? { existingTargetTopicId: existing.nodeId, graftedAt: existing.graftedAt } : {}),
+    };
+  }));
+  sendJson(response, 200, {
+    sourceSessionId,
+    topic,
+    activeMemories,
+    omittedMemories,
+    targets,
+    duplicatePolicy: "skip",
+    note: "Grafting creates an independent copy. Later source changes are not synchronized.",
+  });
+}
+
+async function executeTopicGraft(
+  request: IncomingMessage,
+  response: ServerResponse,
+  context: StudioApiContext,
+  sourceSessionId: string,
+): Promise<void> {
+  const input = await readGraftInput(request, response, context, sourceSessionId);
+  if (!input) return;
+  const results = [];
+  for (const targetSessionId of input.targetSessionIds) {
+    try {
+      const result = await context.store.graftTopics({
+        sourceSessionId,
+        targetSessionId,
+        topicIds: [input.topicId],
+        duplicatePolicy: "skip",
+      });
+      results.push({
+        ...result,
+        targetTopicId: result.copiedTopics[0]?.id ?? result.existingTargetTopicId,
+      });
+    } catch (error) {
+      results.push({
+        sourceSessionId,
+        targetSessionId,
+        sourceTopicId: input.topicId,
+        status: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  sendJson(response, 200, { sourceSessionId, topicId: input.topicId, results });
+}
+
+async function removeTopicGraft(
+  response: ServerResponse,
+  context: StudioApiContext,
+  targetSessionId: string,
+  nodeId: string,
+): Promise<void> {
+  if (!await context.repository.sessionExists(targetSessionId)) {
+    sendJson(response, 404, { error: `Session '${targetSessionId}' was not found.` });
+    return;
+  }
+  const removed = await context.store.removeGraftFromSession(targetSessionId, nodeId);
+  if (!removed) {
+    sendJson(response, 404, { error: `Graft '${nodeId}' was not found in session '${targetSessionId}'.` });
+    return;
+  }
+  sendJson(response, 200, { targetSessionId, nodeId, action: "remove-graft", removed });
+}
+
+async function readGraftInput(
+  request: IncomingMessage,
+  response: ServerResponse,
+  context: StudioApiContext,
+  sourceSessionId: string,
+): Promise<{ topicId: string; targetSessionIds: string[] } | null> {
+  if (!await context.repository.sessionExists(sourceSessionId)) {
+    sendJson(response, 404, { error: `Session '${sourceSessionId}' was not found.` });
+    return null;
+  }
+  const body = await readJsonBody(request);
+  if (!isObject(body)) {
+    sendJson(response, 400, { error: "Topic graft requires a JSON object body." });
+    return null;
+  }
+  const topicIds = Array.isArray(body.topicIds) ? body.topicIds.filter((value): value is string => typeof value === "string" && value.length > 0) : [];
+  const targetSessionIds = Array.isArray(body.targetSessionIds)
+    ? [...new Set(body.targetSessionIds.filter((value): value is string => typeof value === "string" && value.length > 0))]
+    : [];
+  if (topicIds.length !== 1 || targetSessionIds.length === 0 || body.duplicatePolicy !== "skip") {
+    sendJson(response, 400, { error: "Topic graft requires one topic ID, at least one target session, and duplicatePolicy 'skip'." });
+    return null;
+  }
+  if (targetSessionIds.includes(sourceSessionId)) {
+    sendJson(response, 400, { error: "The source session cannot also be a graft target." });
+    return null;
+  }
+  for (const targetSessionId of targetSessionIds) {
+    if (!await context.repository.sessionExists(targetSessionId)) {
+      sendJson(response, 404, { error: `Target session '${targetSessionId}' was not found.` });
+      return null;
+    }
+  }
+  return { topicId: topicIds[0]!, targetSessionIds };
+}
+
+function isActiveMemory(memory: StudioGraftMemory): boolean {
+  return !memory.forgotten && !memory.decayed && memory.supersededBy == null;
 }
 
 async function sendSessionMemories(

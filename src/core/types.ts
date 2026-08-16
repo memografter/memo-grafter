@@ -166,6 +166,25 @@ export interface GraftRegistryEntry {
   graftedAt: Date;
 }
 
+export type GraftDuplicatePolicy = "skip";
+
+export interface GraftTopicsRequest {
+  sourceSessionId: string;
+  targetSessionId: string;
+  topicIds: string[];
+  duplicatePolicy: GraftDuplicatePolicy;
+}
+
+export interface GraftTopicsResult {
+  sourceSessionId: string;
+  targetSessionId: string;
+  sourceTopicId: string;
+  status: "copied" | "skipped";
+  copiedTopics: TopicNode[];
+  copiedMemoryCount: number;
+  existingTargetTopicId?: string;
+}
+
 export interface GraftOrigin {
   sourceSessionId: string;
   sourceNodeId: string;
