@@ -669,6 +669,33 @@ export function renderStudioHtml(state: StudioFrontendState): string {
         gap: 10px;
       }
 
+      .graft-panel { display: grid; gap: 10px; margin-top: 12px; }
+      .graft-target-list { border: 1px solid #d8dee9; border-radius: 8px; display: grid; gap: 8px; max-height: 188px; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; padding: 10px; }
+      .graft-target { align-items: flex-start; display: flex; gap: 8px; min-height: 52px; }
+      .graft-review { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+      .graft-review-header { background: var(--surface-muted); border-bottom: 1px solid var(--border-muted); display: grid; gap: 3px; padding: 12px 14px; }
+      .graft-review-title { color: var(--text-strong); font-size: 15px; font-weight: 800; }
+      .graft-review-subtitle { color: var(--text-muted); font-size: 12px; line-height: 1.4; }
+      .graft-review-body { display: grid; gap: 0; padding: 0 14px; }
+      .graft-review-section { border-bottom: 1px solid var(--border-muted); display: grid; gap: 9px; padding: 13px 0; }
+      .graft-review-section:last-child { border-bottom: 0; }
+      .graft-eyebrow { color: var(--text-muted); font-size: 10px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+      .graft-topic-title { color: var(--text-strong); font-size: 15px; font-weight: 800; line-height: 1.35; }
+      .graft-counts { display: flex; flex-wrap: wrap; gap: 7px; }
+      .graft-count { background: var(--accent-soft); border: 1px solid var(--border-muted); border-radius: 999px; color: var(--text); font-size: 11px; font-weight: 750; padding: 4px 8px; }
+      .graft-count.omitted { background: var(--surface-muted); color: var(--text-muted); }
+      .graft-memory-list { display: grid; gap: 6px; max-height: 180px; overflow-y: auto; padding-right: 2px; }
+      .graft-memory-row { align-items: center; background: var(--surface-muted); border: 1px solid var(--border-muted); border-radius: 7px; color: var(--text); display: flex; font-size: 12px; gap: 8px; line-height: 1.35; padding: 7px 9px; }
+      .graft-memory-check { color: var(--success); font-weight: 900; }
+      .graft-destinations { display: grid; gap: 7px; }
+      .graft-destination { align-items: center; background: var(--surface-muted); border: 1px solid var(--border-muted); border-radius: 7px; display: flex; gap: 8px; justify-content: space-between; padding: 8px 9px; }
+      .graft-destination-name { color: var(--text); font-size: 12px; font-weight: 750; overflow-wrap: anywhere; }
+      .graft-status { border-radius: 999px; flex: 0 0 auto; font-size: 10px; font-weight: 800; padding: 3px 7px; }
+      .graft-status.ready { background: var(--success-soft); color: var(--success); }
+      .graft-status.skip { background: var(--warning-soft); color: var(--warning); }
+      .graft-copy-note { background: var(--accent-soft); border-radius: 7px; color: var(--text-muted); font-size: 11px; line-height: 1.45; padding: 8px 9px; }
+      .graft-footer { background: var(--surface); border-top: 1px solid var(--border-muted); justify-content: flex-end; padding-top: 10px; position: sticky; bottom: 0; }
+
       .preview-result {
         border: 1px solid #d8dee9;
         border-radius: 8px;
@@ -1146,6 +1173,16 @@ export function renderStudioHtml(state: StudioFrontendState): string {
         padding: 0;
       }
 
+      .connected-memory-summary { align-items: center; display: flex; gap: 8px; justify-content: space-between; }
+      .connected-memory-count { color: var(--text-muted); font-size: 12px; font-weight: 700; }
+      .connected-memory-window { display: grid; gap: 7px; max-height: 222px; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; padding-right: 2px; }
+      .connected-memory-row { align-items: center; background: var(--surface-muted); border: 1px solid var(--border-muted); border-radius: 8px; color: inherit; display: grid; gap: 4px; grid-template-columns: minmax(0, 1fr) auto; min-height: 68px; padding: 9px 10px; text-align: left; width: 100%; }
+      .connected-memory-row:hover { background: var(--accent-soft); border-color: var(--accent); }
+      .connected-memory-copy { display: grid; gap: 3px; min-width: 0; }
+      .connected-memory-title { color: var(--text-strong); font-size: 12px; font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .connected-memory-value { -webkit-box-orient: vertical; -webkit-line-clamp: 2; color: var(--text-muted); display: -webkit-box; font-size: 11px; line-height: 1.35; overflow: hidden; }
+      .connected-memory-chevron { color: var(--text-muted); font-size: 16px; }
+
       .detail-link {
         background: transparent;
         border: 0;
@@ -1189,6 +1226,12 @@ export function renderStudioHtml(state: StudioFrontendState): string {
         background: #fff1f0;
         border-color: #c2413b;
         color: #922d28;
+      }
+
+      .action-status.warning {
+        background: #fff7ed;
+        border-color: #d97706;
+        color: #9a5b12;
       }
 
       .tag-row {
@@ -1441,6 +1484,12 @@ export function renderStudioHtml(state: StudioFrontendState): string {
         color: var(--danger);
       }
 
+      .action-status.warning {
+        background: var(--warning-soft);
+        border-color: var(--warning);
+        color: var(--warning);
+      }
+
       .token-meter.warning {
         background: var(--warning-soft);
         border-color: var(--warning);
@@ -1654,6 +1703,8 @@ export function renderStudioHtml(state: StudioFrontendState): string {
           },
           actionPending: false,
           actionStatus: null,
+          expandedMemoriesTopicId: null,
+          graft: { topicId: null, targetSessionIds: [], preview: null, result: null, loading: false, error: null },
           error: null,
           filters: {
             nodeType: "all",
@@ -1782,6 +1833,8 @@ export function renderStudioHtml(state: StudioFrontendState): string {
             state.actionStatus = null;
             state.graphSearch = { query: "", activeMatchIndex: 0 };
             elements.graphSearchInput.value = "";
+            state.graft = { topicId: null, targetSessionIds: [], preview: null, result: null, loading: false, error: null };
+            state.expandedMemoriesTopicId = null;
           }
           state.selectedGraphNodeId = selectedGraphNodeId;
           state.loadingGraph = true;
@@ -2989,6 +3042,7 @@ export function renderStudioHtml(state: StudioFrontendState): string {
           state.hoveredGraphNodeId = null;
           state.selectedEntity = null;
           state.actionStatus = null;
+          state.expandedMemoriesTopicId = null;
           renderGraph();
         }
 
@@ -2999,6 +3053,7 @@ export function renderStudioHtml(state: StudioFrontendState): string {
           const searchParentIds = new Set(searchMatches
             .filter((match) => match.kind === "memory")
             .map((match) => match.parentTopicId));
+          const graftOrigins = new Map((raw.graftRegistry || []).map((entry) => [entry.nodeId, entry]));
           const topics = (raw.nodes || []).map((node) => ({
             id: node.id,
             kind: "topic",
@@ -3006,7 +3061,7 @@ export function renderStudioHtml(state: StudioFrontendState): string {
             subtitle: node.summary || "",
             tags: node.tags || [],
             lifecycle: node.suppressed ? "suppressed" : "active",
-            raw: node
+            raw: { ...node, graftOrigin: graftOrigins.get(node.id) || null }
           }));
           const memories = (raw.memories || []).map((memory) => ({
             id: memory.id,
@@ -3380,6 +3435,9 @@ export function renderStudioHtml(state: StudioFrontendState): string {
         function selectGraphNode(nodeId, graph) {
           if (!nodeId) return;
           const entity = resolveGraphEntity(nodeId, graph);
+          if (entity && entity.kind === "topic" && state.expandedMemoriesTopicId !== nodeId) {
+            state.expandedMemoriesTopicId = null;
+          }
           state.selectedGraphNodeId = nodeId;
           state.selectedEntity = entity
             ? { kind: entity.kind, id: entity.id, source: "graph" }
@@ -3508,6 +3566,7 @@ export function renderStudioHtml(state: StudioFrontendState): string {
             button.addEventListener("click", () => {
               const id = button.getAttribute("data-detail-node-id");
               const kind = ((state.graph && state.graph.nodes) || (state.tables && state.tables.topics) || []).some((topic) => topic.id === id) ? "topic" : "memory";
+              if (kind === "topic" && state.expandedMemoriesTopicId !== id) state.expandedMemoriesTopicId = null;
               state.selectedGraphNodeId = id;
               state.selectedEntity = { kind, id, source: state.activeTab === "tables" ? "tables" : "graph" };
               state.actionStatus = null;
@@ -3521,6 +3580,27 @@ export function renderStudioHtml(state: StudioFrontendState): string {
 
           elements.detailsPanel.querySelectorAll("[data-lifecycle-action]").forEach((button) => {
             button.addEventListener("click", () => runLifecycleAction(node, button.getAttribute("data-lifecycle-action")));
+          });
+          elements.detailsPanel.querySelectorAll("[data-graft-action]").forEach((button) => {
+            button.addEventListener("click", () => runGraftUiAction(node, button.getAttribute("data-graft-action"), button));
+          });
+          elements.detailsPanel.querySelectorAll("[data-graft-target]").forEach((input) => {
+            input.addEventListener("change", () => {
+              const targetId = input.getAttribute("data-graft-target");
+              state.graft.targetSessionIds = input.checked
+                ? Array.from(new Set(state.graft.targetSessionIds.concat(targetId)))
+                : state.graft.targetSessionIds.filter((id) => id !== targetId);
+              state.graft.preview = null;
+              state.graft.result = null;
+              renderEntityDetails(node);
+            });
+          });
+          elements.detailsPanel.querySelectorAll("[data-memory-list-toggle]").forEach((button) => {
+            button.addEventListener("click", () => {
+              const topicId = button.getAttribute("data-memory-list-toggle");
+              state.expandedMemoriesTopicId = state.expandedMemoriesTopicId === topicId ? null : topicId;
+              renderEntityDetails(node);
+            });
           });
         }
 
@@ -3547,7 +3627,13 @@ export function renderStudioHtml(state: StudioFrontendState): string {
             detailTextRow("Created", formatDate(raw.createdAt))
           ].join("")) +
           detailSection("Source metadata", sourceRows) +
-          detailSection("Connected memories", connectedMemoriesMarkup(connectedMemories)) +
+          (graftOriginForTopic(node.id) ? detailSection("Graft provenance", [
+            detailTextRow("Source session", graftOriginForTopic(node.id).sourceSessionId),
+            detailTextRow("Source topic", graftOriginForTopic(node.id).sourceNodeId),
+            detailTextRow("Grafted", formatDate(graftOriginForTopic(node.id).graftedAt)),
+            detailTextRow("Synchronization", "None — this is an independent copy")
+          ].join("")) : "") +
+          detailSection("Connected memories", connectedMemoriesMarkup(node.id, connectedMemories)) +
           renderActionSection(node);
         }
 
@@ -3622,11 +3708,152 @@ export function renderStudioHtml(state: StudioFrontendState): string {
           let action = "";
 
           if (node.kind === "topic" && !node.raw.suppressed) {
-            action = '<button class="icon-button" type="button" data-lifecycle-action="suppress"' + (state.actionPending ? " disabled" : "") + '>Suppress topic</button>';
+            action = '<button class="icon-button" type="button" data-lifecycle-action="suppress"' + (state.actionPending ? " disabled" : "") + '>Suppress topic</button>' +
+              '<button class="primary-button" type="button" data-graft-action="open"' + (state.actionPending ? " disabled" : "") + '>Graft to session</button>';
+          }
+          if (node.kind === "topic" && graftOriginForTopic(node.id)) {
+            action += '<button class="danger-button" type="button" data-graft-action="remove"' + (state.actionPending ? " disabled" : "") + '>Remove graft</button>';
           }
 
-          if (!action && !status) return "";
-          return detailSection("Maintenance", status + (action ? '<div class="detail-actions">' + action + '</div>' : ""));
+          const graftPanel = state.graft.topicId === node.id ? renderGraftPanel() : "";
+          if (!action && !status && !graftPanel) return "";
+          return detailSection("Actions", status + (action ? '<div class="detail-actions">' + action + '</div>' : "") + graftPanel);
+        }
+
+        function graftOriginForTopic(topicId) {
+          return (((state.graph && state.graph.graftRegistry) || [])).find((entry) => entry.nodeId === topicId) || null;
+        }
+
+        function renderGraftPanel() {
+          if (state.graft.result) {
+            return '<div class="graft-panel">' + renderGraftResult() +
+              '<div class="detail-actions"><button class="primary-button" type="button" data-graft-action="done">Done</button></div></div>';
+          }
+          const targets = state.sessions.filter((session) => session.id !== state.selectedSessionId);
+          const selected = new Set(state.graft.targetSessionIds);
+          const targetMarkup = targets.length
+            ? targets.map((session) => '<label class="graft-target"><input type="checkbox" data-graft-target="' + escapeAttribute(session.id) + '"' + (selected.has(session.id) ? " checked" : "") + (state.graft.loading ? " disabled" : "") + '><span><strong>' + escapeHtml(sessionDisplayLabel(session)) + '</strong><br><span class="subtle">' + escapeHtml(session.id) + ' · ' + numberText(session.topicCount) + ' topics</span></span></label>').join("")
+            : '<p class="subtle">No other sessions are available.</p>';
+          const allDuplicates = state.graft.preview && state.graft.preview.targets.every((target) => target.duplicate);
+          return '<div class="graft-panel">' +
+            '<p class="subtle">Copies this topic and its active memories. Later source changes are not synchronized.</p>' +
+            '<div class="graft-target-list">' + targetMarkup + '</div>' +
+            (state.graft.error ? '<div class="action-status error" role="alert">' + escapeHtml(state.graft.error) + '</div>' : "") +
+            renderGraftPreview() + renderGraftResult() +
+            '<div class="detail-actions graft-footer"><button class="icon-button" type="button" data-graft-action="cancel"' + (state.graft.loading ? " disabled" : "") + '>Cancel</button>' +
+            (!state.graft.preview
+              ? '<button class="primary-button" type="button" data-graft-action="preview"' + (!selected.size || state.graft.loading ? " disabled" : "") + '>' + (state.graft.loading ? "Loading…" : "Review graft") + '</button>'
+              : '<button class="primary-button" type="button" data-graft-action="confirm"' + (state.graft.loading || allDuplicates ? " disabled" : "") + '>' + (state.graft.loading ? "Copying…" : "Graft to " + numberText(state.graft.preview.targets.length) + " session" + (state.graft.preview.targets.length === 1 ? "" : "s")) + '</button>') +
+            '</div></div>';
+        }
+
+        function renderGraftPreview() {
+          const preview = state.graft.preview;
+          if (!preview) return "";
+          const active = preview.activeMemories || [];
+          const omitted = preview.omittedMemories || [];
+          const topicTitle = (preview.topic && preview.topic.label) || preview.topic.id;
+          const memoriesMarkup = active.length
+            ? '<div class="graft-memory-list">' + active.map((memory) => '<div class="graft-memory-row"><span class="graft-memory-check" aria-hidden="true">✓</span><span>' + escapeHtml(graftMemoryTitle(memory)) + '</span></div>').join("") + '</div>'
+            : '<p class="subtle">No active memories will be copied.</p>';
+          const omittedMarkup = omitted.length
+            ? '<details><summary>View ' + numberText(omitted.length) + ' omitted memor' + (omitted.length === 1 ? 'y' : 'ies') + '</summary><div class="graft-memory-list">' + omitted.map((item) => '<div class="graft-memory-row"><span>' + escapeHtml(graftMemoryTitle(item.memory)) + '</span><span class="subtle">' + escapeHtml(item.reasons.join(", ")) + '</span></div>').join("") + '</div></details>'
+            : "";
+          const destinationsMarkup = '<div class="graft-destinations">' + preview.targets.map((target) => {
+            const session = state.sessions.find((candidate) => candidate.id === target.targetSessionId) || { id: target.targetSessionId };
+            return '<div class="graft-destination"><span class="graft-destination-name">' + escapeHtml(sessionDisplayLabel(session)) + '</span>' +
+              '<span class="graft-status ' + (target.duplicate ? 'skip' : 'ready') + '">' + (target.duplicate ? 'Already grafted · skip' : 'Ready') + '</span></div>';
+          }).join("") + '</div>';
+          return '<section class="graft-review" aria-label="Graft confirmation review">' +
+            '<header class="graft-review-header"><span class="graft-review-title">Review graft</span><span class="graft-review-subtitle">Confirm what will be copied to the selected session' + (preview.targets.length === 1 ? '' : 's') + '.</span></header>' +
+            '<div class="graft-review-body">' +
+              '<div class="graft-review-section"><span class="graft-eyebrow">Source topic</span><span class="graft-topic-title">' + escapeHtml(topicTitle) + '</span><div class="graft-counts"><span class="graft-count">' + numberText(active.length) + ' included</span>' + (omitted.length ? '<span class="graft-count omitted">' + numberText(omitted.length) + ' omitted</span>' : '') + '</div></div>' +
+              '<div class="graft-review-section"><span class="graft-eyebrow">Memories</span>' + memoriesMarkup + omittedMarkup + '</div>' +
+              '<div class="graft-review-section"><span class="graft-eyebrow">Destination' + (preview.targets.length === 1 ? '' : 's') + '</span>' + destinationsMarkup + '</div>' +
+              '<div class="graft-review-section"><div class="graft-copy-note">This creates an independent copy. Later source changes will not be synchronized.</div></div>' +
+            '</div></section>';
+        }
+
+        function renderGraftResult() {
+          const result = state.graft.result;
+          if (!result) return "";
+          const outcomes = result.results || [];
+          const copied = outcomes.filter((item) => item.status === "copied").length;
+          const failed = outcomes.filter((item) => item.status === "failed").length;
+          const heading = failed > 0 && failed === outcomes.length ? "Graft failed"
+            : copied === 0 ? "No topics copied"
+              : failed > 0 ? "Graft completed with issues"
+                : "Graft completed";
+          const kind = failed > 0 && failed === outcomes.length ? "error" : failed > 0 || copied === 0 ? "warning" : "success";
+          return '<div class="action-status ' + kind + '" role="status"><strong>' + heading + '</strong><ul>' + outcomes.map((item) =>
+            '<li>' + escapeHtml(sessionDisplayLabel(state.sessions.find((session) => session.id === item.targetSessionId) || { id: item.targetSessionId })) + ': ' + escapeHtml(item.status) +
+            (item.targetTopicId ? ' <button class="icon-button" type="button" data-graft-action="navigate" data-target-session="' + escapeAttribute(item.targetSessionId) + '" data-target-topic="' + escapeAttribute(item.targetTopicId) + '">Open topic</button>' : '') +
+            (item.error ? ' — ' + escapeHtml(item.error) : '') + '</li>').join("") + '</ul></div>';
+        }
+
+        async function runGraftUiAction(node, action, button) {
+          if (state.actionPending || state.graft.loading) return;
+          if (action === "open") {
+            state.graft = { topicId: node.id, targetSessionIds: [], preview: null, result: null, loading: false, error: null };
+            renderEntityDetails(node);
+            return;
+          }
+          if (action === "cancel" || action === "done") {
+            state.graft = { topicId: null, targetSessionIds: [], preview: null, result: null, loading: false, error: null };
+            renderEntityDetails(node);
+            return;
+          }
+          if (action === "navigate") {
+            const targetSessionId = button.getAttribute("data-target-session");
+            const targetTopicId = button.getAttribute("data-target-topic");
+            if (await loadGraph(targetSessionId)) {
+              state.selectedGraphNodeId = targetTopicId;
+              state.selectedEntity = { kind: "topic", id: targetTopicId, source: "graph" };
+              renderGraph();
+            }
+            return;
+          }
+          if (action === "remove") {
+            if (!window.confirm("Remove this grafted copy? The source topic will not be affected.")) return;
+            state.actionPending = true;
+            try {
+              await fetchJson("/api/sessions/" + encodeURIComponent(state.selectedSessionId) + "/grafts/" + encodeURIComponent(node.id) + "/remove", { method: "POST" });
+              state.selectedGraphNodeId = null;
+              state.selectedEntity = null;
+              await loadGraph(state.selectedSessionId);
+            } catch (error) {
+              state.actionStatus = { nodeId: node.id, kind: "error", message: error.message || String(error) };
+            } finally {
+              state.actionPending = false;
+              renderWorkspace();
+            }
+            return;
+          }
+          if (action !== "preview" && action !== "confirm") return;
+          state.graft.loading = true;
+          state.graft.error = null;
+          renderEntityDetails(node);
+          const url = "/api/sessions/" + encodeURIComponent(state.selectedSessionId) + "/grafts" + (action === "preview" ? "/preview" : "");
+          try {
+            const response = await fetchJson(url, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ topicIds: [node.id], targetSessionIds: state.graft.targetSessionIds, duplicatePolicy: "skip" })
+            });
+            if (action === "preview") state.graft.preview = response;
+            else { state.graft.result = response; await loadSessions(); }
+          } catch (error) {
+            state.graft.error = error.message || String(error);
+          } finally {
+            state.graft.loading = false;
+            renderEntityDetails(node);
+          }
+        }
+
+        function graftMemoryTitle(memory) {
+          const subject = String((memory && memory.subject) || "").trim();
+          const predicate = String((memory && memory.predicate) || "").trim();
+          return [subject, predicate].filter(Boolean).join(" ") || "Memory";
         }
 
         async function runLifecycleAction(node, action) {
@@ -3673,13 +3900,20 @@ export function renderStudioHtml(state: StudioFrontendState): string {
           return "Topic suppressed. The graph and node details have been refreshed.";
         }
 
-        function connectedMemoriesMarkup(memories) {
-          if (memories.length === 0) return '<p class="subtle">No memories are connected to this topic.</p>';
-          return '<ul class="detail-list">' + memories.map((memory) =>
-            '<li><button class="detail-link" type="button" data-detail-node-id="' + escapeAttribute(memory.id) + '">' +
-              escapeHtml(memory.subject + " " + memory.predicate + ": " + memory.value) +
-            '</button></li>'
-          ).join("") + '</ul>';
+        function connectedMemoriesMarkup(topicId, memories) {
+          const expanded = state.expandedMemoriesTopicId === topicId;
+          const countLabel = numberText(memories.length) + " memor" + (memories.length === 1 ? "y" : "ies");
+          const toggle = memories.length
+            ? '<button class="icon-button connected-memory-toggle" type="button" data-memory-list-toggle="' + escapeAttribute(topicId) + '" aria-expanded="' + String(expanded) + '">' + (expanded ? "Hide memories" : "Show memories") + '</button>'
+            : "";
+          const summary = '<div class="connected-memory-summary"><span class="connected-memory-count">' + countLabel + '</span>' + toggle + '</div>';
+          if (!expanded || memories.length === 0) return summary;
+          return summary + '<div class="connected-memory-window">' + memories.map((memory) =>
+            '<button class="connected-memory-row" type="button" data-detail-node-id="' + escapeAttribute(memory.id) + '">' +
+              '<span class="connected-memory-copy"><span class="connected-memory-title">' + escapeHtml(graftMemoryTitle(memory)) + '</span>' +
+              '<span class="connected-memory-value">' + escapeHtml(memory.value || "No value recorded") + '</span></span>' +
+              '<span class="connected-memory-chevron" aria-hidden="true">›</span></button>'
+          ).join("") + '</div>';
         }
 
         function connectedTopicsMarkup(topics) {

@@ -138,6 +138,52 @@ describe("MemoGrafter Studio API", () => {
     }
   });
 
+  it("previews, copies, and removes a topic graft using IDs only", async () => {
+    const context = makeContext();
+    context.repository.sessionExists = vi.fn(async (sessionId: string) => ["session-1", "session-2"].includes(sessionId));
+    context.store.getGraftRegistry = vi.fn(async () => []);
+    context.store.removeGraftFromSession = vi.fn(async () => ({
+      nodeId: "copied-topic-1",
+      sourceSessionId: "session-1",
+      sourceNodeId: "topic-1",
+      graftedAt: new Date("2026-08-16T00:00:00.000Z"),
+    }));
+    const server = createApiServer(context);
+    const port = await listenOnAvailablePort(server, "127.0.0.1", 0);
+
+    try {
+      const body = JSON.stringify({
+        topicIds: ["topic-1"],
+        targetSessionIds: ["session-2"],
+        duplicatePolicy: "skip",
+      });
+      const preview = await requestJson(port, "/api/sessions/session-1/grafts/preview", { method: "POST", body });
+      const copied = await requestJson(port, "/api/sessions/session-1/grafts", { method: "POST", body });
+      const removed = await requestJson(port, "/api/sessions/session-2/grafts/copied-topic-1/remove", { method: "POST" });
+
+      expect(preview.status).toBe(200);
+      expect(preview.body).toMatchObject({
+        topic: { id: "topic-1" },
+        activeMemories: [{ id: memoryId }],
+        omittedMemories: [],
+        targets: [{ targetSessionId: "session-2", duplicate: false }],
+      });
+      expect(copied.body).toMatchObject({
+        results: [{ targetSessionId: "session-2", status: "copied", targetTopicId: "copied-topic-1" }],
+      });
+      expect(context.store.graftTopics).toHaveBeenCalledWith({
+        sourceSessionId: "session-1",
+        targetSessionId: "session-2",
+        topicIds: ["topic-1"],
+        duplicatePolicy: "skip",
+      });
+      expect(removed.body).toMatchObject({ action: "remove-graft", nodeId: "copied-topic-1" });
+      expect(context.store.removeGraftFromSession).toHaveBeenCalledWith("session-2", "copied-topic-1");
+    } finally {
+      await closeServer(server);
+    }
+  });
+
   it("reports prompt preview configuration and input errors", async () => {
     const context = makeContext();
     context.preview = {
@@ -290,7 +336,13 @@ function makeContext(repositoryOverrides: Partial<StudioApiContext["repository"]
   const memory = {
     id: memoryId,
     sessionId: "session-1",
+    topicNodeId: "topic-1",
+    subject: "project",
+    predicate: "name",
     value: "alpha memory",
+    decayed: false,
+    forgotten: false,
+    supersededBy: null,
   };
   const topic = {
     id: "topic-1",
@@ -306,6 +358,16 @@ function makeContext(repositoryOverrides: Partial<StudioApiContext["repository"]
       getMemoriesBySession: vi.fn(async () => [memory]),
       getMessagesBySession: vi.fn(async () => [{ role: "user", content: "hello" }]),
       suppressTopic: vi.fn(async () => true),
+      getTopicNode: vi.fn(async () => topic),
+      getGraftRegistry: vi.fn(async () => []),
+      graftTopics: vi.fn(async (request) => ({
+        ...request,
+        sourceTopicId: request.topicIds[0]!,
+        status: "copied" as const,
+        copiedTopics: [{ id: "copied-topic-1" }],
+        copiedMemoryCount: 1,
+      })),
+      removeGraftFromSession: vi.fn(async () => null),
     },
     repository: {
       listSessions: vi.fn(async () => [{

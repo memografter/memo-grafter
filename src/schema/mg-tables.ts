@@ -183,6 +183,8 @@ export const memoGrafterIndexes = [
   mgIndex({ name: "mg_session_ingest_state_updated_idx", table: "mg_session_ingest_state", description: "Ingest state freshness lookup." }),
   mgIndex({ name: "idx_graft_registry_session", table: "mg_graft_registry", description: "Graft registry lookup by session." }),
   mgIndex({ name: "idx_graft_registry_node_unique", table: "mg_graft_registry", description: "Unique graft registry node ownership." }),
+  mgIndex({ name: "idx_graft_registry_source_target_unique", table: "mg_graft_registry", description: "Prevents duplicate source-topic grafts into a target session." }),
+  mgIndex({ name: "idx_graft_registry_source", table: "mg_graft_registry", description: "Source topic provenance lookup." }),
   mgIndex({ name: "mg_nodes_embedding_idx", table: "mg_topic_nodes", description: "Topic vector similarity search." }),
   mgIndex({ name: "idx_memory_nodes_topic", table: "mg_memory_nodes", description: "Memory lookup by topic node." }),
   mgIndex({ name: "idx_memory_nodes_segment", table: "mg_memory_nodes", description: "Memory lookup by segment." }),

@@ -145,9 +145,11 @@ The Studio landing page shows sessions first. Select a session to open its works
 - **Tables:** provides a read-only browser for the underlying `mg_*` tables using their original table names. Use the table selector and pagination controls to inspect rows; long cell values can be expanded in place.
 - **Prompt Preview:** runs a read-only graft or recall query simulation for the selected session. It displays the exact generated system prompt and token usage. Prompt Preview requires an embedder in `mg.config.ts`; the generated OpenAI-compatible scaffold uses `fetch` and works when `OPENAI_API_KEY` is available, without requiring the `openai` package. When no embedder is configured, only Prompt Preview is unavailable.
 
+For an active topic, **Graft to session** copies the topic and its active memories into one or more selected sessions. Studio first shows the active memories that will be copied, lifecycle-filtered memories that will be omitted, and duplicate targets that will be skipped. A graft is an independent copy rather than a synchronized reference. The copied topic records its source-session provenance and can be removed from its target session without changing the source.
+
 The node details panel also provides the supported maintenance action: suppressing a topic. Studio refreshes the selected graph after a successful suppression and keeps the affected node selected so its new lifecycle state is visible. Use the refresh controls to reload the session list or active tab after your application writes more memory.
 
-Studio also hosts an internal REST API for its own views, including session listing, graph reads, table reads, memory search, Prompt Preview, and topic suppression. This API is local tooling infrastructure, not a public web service. Authentication, multi-user access control, and internet exposure are out of scope; do not bind Studio to a public interface or proxy it as an application API.
+Studio also hosts an internal REST API for its own views, including session listing, graph reads, table reads, memory search, Prompt Preview, topic graft preview/copy/removal, and topic suppression. This API is local tooling infrastructure, not a public web service. Authentication, multi-user access control, and internet exposure are out of scope; do not bind Studio to a public interface or proxy it as an application API.
 
 Current v1 tables:
 
