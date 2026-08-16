@@ -56,16 +56,17 @@ interface StudioGraftTopicsResult {
 }
 
 export interface StudioApiPreviewService {
-  getStatus(): { available: boolean; reason?: string };
+  getStatus(): { available: boolean; reason?: string; completion?: { available: boolean; reason?: string; provider?: string; model?: string } };
   run(request: StudioPreviewRequest): Promise<unknown>;
+  complete?(planId: string, sessionId: string): Promise<unknown>;
 }
 
 export interface StudioPreviewRequest {
-  mode: "graft" | "recall";
   sessionId: string;
   query: string;
-  graft?: unknown;
-  recall?: unknown;
+  profile?: "memo-grafter-agent" | "fleet-worker";
+  fleetMemoryMode?: "local" | "fleet" | "both";
+  sharedSessionId?: string;
 }
 
 export interface StudioApiRepository {
@@ -176,13 +177,22 @@ export async function handleStudioApiRequest(
       return;
     }
 
-    if (collection === "preview" && route.segments.length === 3) {
+    if ((collection === "preview" || collection === "invocation-preview") && route.segments.length === 3) {
       if (method !== "POST") {
         sendMethodNotAllowed(response, ["POST"]);
         return;
       }
 
-      await sendPromptPreview(request, response, context, sessionId);
+      await sendInvocationPreview(request, response, context, sessionId);
+      return;
+    }
+
+    if (collection === "invocation-preview" && itemId && action === "complete" && route.segments.length === 5) {
+      if (method !== "POST") {
+        sendMethodNotAllowed(response, ["POST"]);
+        return;
+      }
+      await completeInvocationPreview(response, context, sessionId, itemId);
       return;
     }
 
@@ -496,7 +506,7 @@ async function sendSessionTables(
   });
 }
 
-async function sendPromptPreview(
+async function sendInvocationPreview(
   request: IncomingMessage,
   response: ServerResponse,
   context: StudioApiContext,
@@ -509,11 +519,11 @@ async function sendPromptPreview(
 
   const status = context.preview?.getStatus() ?? {
     available: false,
-    reason: "Prompt Preview is not configured.",
+    reason: "Invoke Preview is not configured.",
   };
   if (!context.preview || !status.available) {
     sendJson(response, 503, {
-      error: "Prompt Preview is unavailable.",
+      error: "Invoke Preview is unavailable.",
       previewStatus: status,
     });
     return;
@@ -521,29 +531,56 @@ async function sendPromptPreview(
 
   const body = await readJsonBody(request);
   if (!isObject(body)) {
-    sendJson(response, 400, { error: "Prompt Preview requires a JSON object body." });
+    sendJson(response, 400, { error: "Invoke Preview requires a JSON object body." });
     return;
   }
 
-  const mode = body.mode;
-  if (mode !== "graft" && mode !== "recall") {
-    sendJson(response, 400, { error: "Prompt Preview mode must be 'graft' or 'recall'." });
+  const profile = body.profile ?? "memo-grafter-agent";
+  if (profile !== "memo-grafter-agent" && profile !== "fleet-worker") {
+    sendJson(response, 400, { error: "Invoke Preview profile must be 'memo-grafter-agent' or 'fleet-worker'." });
+    return;
+  }
+  const fleetMemoryMode = body.fleetMemoryMode ?? "local";
+  if (fleetMemoryMode !== "local" && fleetMemoryMode !== "fleet" && fleetMemoryMode !== "both") {
+    sendJson(response, 400, { error: "Fleet memory mode must be 'local', 'fleet', or 'both'." });
     return;
   }
 
   const query = typeof body.query === "string" ? body.query.trim() : "";
   if (!query) {
-    sendJson(response, 400, { error: "Prompt Preview requires a non-empty query." });
+    sendJson(response, 400, { error: "Invoke Preview requires a non-empty query." });
     return;
   }
 
   const result = await context.preview.run({
-    mode,
     sessionId,
     query,
-    ...(isObject(body.graft) ? { graft: body.graft } : {}),
-    ...(isObject(body.recall) ? { recall: body.recall } : {}),
+    profile,
+    ...(profile === "fleet-worker" ? { fleetMemoryMode } : {}),
+    ...(typeof body.sharedSessionId === "string" && body.sharedSessionId.trim() ? { sharedSessionId: body.sharedSessionId.trim() } : {}),
   });
+  sendJson(response, 200, result);
+}
+
+async function completeInvocationPreview(
+  response: ServerResponse,
+  context: StudioApiContext,
+  sessionId: string,
+  planId: string,
+): Promise<void> {
+  if (!await context.repository.sessionExists(sessionId)) {
+    sendJson(response, 404, { error: `Session '${sessionId}' was not found.` });
+    return;
+  }
+  const completion = context.preview?.getStatus().completion;
+  if (!context.preview?.complete || !completion?.available) {
+    sendJson(response, 503, {
+      error: "LLM execution is unavailable.",
+      reason: completion?.reason ?? "Configure an LLM adapter and provider API key in mg.config.ts.",
+    });
+    return;
+  }
+  const result = await context.preview.complete(planId, sessionId);
   sendJson(response, 200, result);
 }
 

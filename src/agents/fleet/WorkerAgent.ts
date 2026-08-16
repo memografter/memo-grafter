@@ -10,6 +10,8 @@ import type {
   TopicSegment,
 } from "../../core/types.js";
 import type { FleetGraftByRelevanceOptions, FleetRetrievalOptions, WorkerAgentConfig } from "./types.js";
+import { buildInvocationPlan } from "../../invocation/InvocationPlanner.js";
+import type { PlannedMemoryContext } from "../../invocation/types.js";
 
 export class WorkerAgent {
   private readonly agentId: string;
@@ -48,13 +50,14 @@ export class WorkerAgent {
 
   async invoke(userMessage: string): Promise<string> {
     this.history.push({ role: "user", content: userMessage });
-
-    const { nodes } = await this.core.getTopics(this.sessionId);
-    const topicIds = nodes.map((node) => node.id);
-    const { systemPrompt } = await this.core.inject(this.sessionId, topicIds);
-    const memoryPrompt = await this.buildFleetMemoryContext(userMessage);
-    const combinedPrompt = [systemPrompt, memoryPrompt].filter(Boolean).join("\n\n");
-    const response = await this.core.llm.complete(this.history, combinedPrompt);
+    const plan = await buildInvocationPlan(this.sessionId, userMessage, {
+      profile: "fleet-worker",
+      history: this.history,
+      historySource: "process-local",
+      queryAlreadyInHistory: true,
+      buildMemoryContext: () => this.buildFleetInvocationContext(userMessage),
+    });
+    const response = await this.core.llm.complete(plan.request.messages, plan.request.system);
 
     this.history.push({ role: "assistant", content: response });
     await this.core.ingestNow(this.history, this.sessionId).catch((error: unknown) => {
@@ -167,19 +170,60 @@ export class WorkerAgent {
     return [this.sessionId];
   }
 
-  private async buildFleetMemoryContext(query: string): Promise<string> {
-    if (this.memory === "local") return "";
+  private async buildFleetInvocationContext(query: string): Promise<PlannedMemoryContext> {
+    const { nodes } = await this.core.getTopics(this.sessionId);
+    const injected = await this.core.inject(this.sessionId, nodes.map((node) => node.id));
+    let recalled: RetrievalResult | null = null;
+    let recallError: unknown;
 
-    try {
-      const result = await this.recall(query, {
-        memory: this.memory,
+    if (this.memory !== "local") {
+      try {
+        recalled = await this.recall(query, { memory: this.memory, limit: 6, minSimilarity: 0.55 });
+      } catch (error: unknown) {
+        recallError = error;
+        console.warn("MemoGrafter worker fleet recall warning:", error);
+      }
+    }
+
+    const recallPrompt = recalled?.facts.length ? recalled.systemPrompt : "";
+    const content = [injected.systemPrompt, recallPrompt].filter(Boolean).join("\n\n");
+    const topics = [...injected.nodes, ...(recalled?.nodes ?? [])]
+      .filter((node, index, all) => all.findIndex((candidate) => candidate.id === node.id) === index);
+    const memories = [...(injected.memories ?? []), ...(recalled?.facts ?? [])];
+    const status = recallError
+      ? "failed"
+      : content
+        ? "matched"
+        : this.memory === "local" && nodes.length === 0
+          ? "not-applicable"
+          : "no-match";
+
+    return {
+      placement: "system",
+      retrieval: {
+        status,
+        strategy: "fleet-combined",
+        topics,
+        memories,
         limit: 6,
         minSimilarity: 0.55,
-      });
-      return result.facts.length > 0 ? result.systemPrompt : "";
-    } catch (error: unknown) {
-      console.warn("MemoGrafter worker fleet recall warning:", error);
-      return "";
-    }
+        sessionIds: this.resolveMemorySessionIds(),
+        ...(recallError ? {
+          error: {
+            message: recallError instanceof Error ? recallError.message : String(recallError),
+            recoverable: true,
+          },
+        } : {}),
+      },
+      memoryContext: {
+        content: content || null,
+        tokenCount: injected.tokenCount + (recalled?.tokenCount ?? 0),
+        ...((injected.tokenBudget ?? recalled?.tokenBudget) !== undefined ? { tokenBudget: (injected.tokenBudget ?? recalled?.tokenBudget)! } : {}),
+        components: [
+          ...(injected.systemPrompt ? [{ kind: "local-topics" as const, content: injected.systemPrompt, tokenCount: injected.tokenCount }] : []),
+          ...(recallPrompt ? [{ kind: "recalled-memory" as const, content: recallPrompt, tokenCount: recalled?.tokenCount ?? 0 }] : []),
+        ],
+      },
+    };
   }
 }

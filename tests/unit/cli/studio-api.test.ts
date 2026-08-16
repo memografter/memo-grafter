@@ -74,65 +74,78 @@ describe("MemoGrafter Studio API", () => {
     }
   });
 
-  it("runs prompt preview through the configured preview service", async () => {
+  it("runs invoke preview through the configured preview service", async () => {
     const context = makeContext();
     const server = createApiServer(context);
     const port = await listenOnAvailablePort(server, "127.0.0.1", 0);
 
     try {
-      const preview = await requestJson(port, "/api/sessions/session-1/preview", {
+      const preview = await requestJson(port, "/api/sessions/session-1/invocation-preview", {
         method: "POST",
         body: JSON.stringify({
-          mode: "recall",
+          profile: "memo-grafter-agent",
           query: " alpha ",
-          recall: { tokenBudget: 800 },
         }),
       });
 
       expect(preview.status).toBe(200);
       expect(preview.body).toMatchObject({
-        mode: "recall",
+        profile: "memo-grafter-agent",
         query: "alpha",
-        systemPrompt: "preview prompt",
-        tokenCount: 12,
-        tokenBudget: 800,
+        historySource: "database-backed-preview",
+        request: { system: "preview prompt" },
       });
       expect(context.preview?.run).toHaveBeenCalledWith({
-        mode: "recall",
         sessionId: "session-1",
         query: "alpha",
-        recall: { tokenBudget: 800 },
+        profile: "memo-grafter-agent",
       });
     } finally {
       await closeServer(server);
     }
   });
 
-  it("accepts graft prompt preview requests", async () => {
+  it("accepts Fleet Worker invoke preview requests", async () => {
     const context = makeContext();
     const server = createApiServer(context);
     const port = await listenOnAvailablePort(server, "127.0.0.1", 0);
 
     try {
-      const preview = await requestJson(port, "/api/sessions/session-1/preview", {
+      const preview = await requestJson(port, "/api/sessions/session-1/invocation-preview", {
         method: "POST",
         body: JSON.stringify({
-          mode: "graft",
+          profile: "fleet-worker",
+          fleetMemoryMode: "both",
           query: "deployment rollout",
         }),
       });
 
       expect(preview.status).toBe(200);
       expect(preview.body).toMatchObject({
-        mode: "graft",
+        profile: "fleet-worker",
         query: "deployment rollout",
-        systemPrompt: "preview prompt",
+        request: { system: "preview prompt" },
       });
       expect(context.preview?.run).toHaveBeenCalledWith({
-        mode: "graft",
         sessionId: "session-1",
         query: "deployment rollout",
+        profile: "fleet-worker",
+        fleetMemoryMode: "both",
       });
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("executes a stored invocation plan only through the explicit completion endpoint", async () => {
+    const context = makeContext();
+    const server = createApiServer(context);
+    const port = await listenOnAvailablePort(server, "127.0.0.1", 0);
+    try {
+      const completion = await requestJson(port, "/api/sessions/session-1/invocation-preview/plan-1/complete", { method: "POST" });
+      expect(completion.status).toBe(200);
+      expect(completion.body).toMatchObject({ planId: "plan-1", response: "LLM response" });
+      expect(context.preview?.complete).toHaveBeenCalledWith("plan-1", "session-1");
     } finally {
       await closeServer(server);
     }
@@ -184,7 +197,7 @@ describe("MemoGrafter Studio API", () => {
     }
   });
 
-  it("reports prompt preview configuration and input errors", async () => {
+  it("reports invoke preview configuration and input errors", async () => {
     const context = makeContext();
     context.preview = {
       getStatus: vi.fn(() => ({ available: false, reason: "No embedder configured." })),
@@ -196,7 +209,7 @@ describe("MemoGrafter Studio API", () => {
     try {
       const unavailable = await requestJson(port, "/api/sessions/session-1/preview", {
         method: "POST",
-        body: JSON.stringify({ mode: "graft", query: "alpha" }),
+        body: JSON.stringify({ profile: "memo-grafter-agent", query: "alpha" }),
       });
 
       context.preview = {
@@ -205,16 +218,16 @@ describe("MemoGrafter Studio API", () => {
       };
       const invalidMode = await requestJson(port, "/api/sessions/session-1/preview", {
         method: "POST",
-        body: JSON.stringify({ mode: "bad", query: "alpha" }),
+        body: JSON.stringify({ profile: "bad", query: "alpha" }),
       });
       const emptyQuery = await requestJson(port, "/api/sessions/session-1/preview", {
         method: "POST",
-        body: JSON.stringify({ mode: "graft", query: " " }),
+        body: JSON.stringify({ profile: "memo-grafter-agent", query: " " }),
       });
 
       expect(unavailable.status).toBe(503);
       expect(unavailable.body).toMatchObject({
-        error: "Prompt Preview is unavailable.",
+        error: "Invoke Preview is unavailable.",
         previewStatus: { available: false, reason: "No embedder configured." },
       });
       expect(invalidMode.status).toBe(400);
@@ -400,17 +413,19 @@ function makeContext(repositoryOverrides: Partial<StudioApiContext["repository"]
       ...repositoryOverrides,
     },
     preview: {
-      getStatus: vi.fn(() => ({ available: true })),
+      getStatus: vi.fn(() => ({ available: true, completion: { available: true, provider: "Test" } })),
       run: vi.fn(async (request) => ({
-        mode: request.mode,
+        profile: request.profile ?? "memo-grafter-agent",
         query: request.query,
-        systemPrompt: "preview prompt",
-        nodes: [],
-        facts: [],
-        tokenCount: 12,
-        tokenBudget: request.mode === "recall" ? 800 : 4000,
+        sessionId: request.sessionId,
+        historySource: "database-backed-preview",
+        request: { system: "preview prompt", messages: [] },
+        retrieval: { status: "no-match", topics: [], memories: [] },
+        tokens: { total: 12 },
         generatedAt: "2026-06-19T00:00:00.000Z",
+        planId: "plan-1",
       })),
+      complete: vi.fn(async (planId: string) => ({ planId, response: "LLM response", durationMs: 3, completedAt: "2026-06-19T00:00:00.000Z" })),
     },
   };
 }

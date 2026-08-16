@@ -65,6 +65,7 @@ describe("CLI config", () => {
   db: {
     connectionString: "postgres://config",
   },
+  llm: new OpenAILLMAdapter("gpt-4o"),
   embedder: process.env.OPENAI_API_KEY
     ? {
       async embed(text: string): Promise<number[]> {
@@ -83,6 +84,8 @@ describe("CLI config", () => {
 
     expect(runtime?.embedder).toBeDefined();
     expect(typeof runtime?.embedder?.embed).toBe("function");
+    expect(typeof runtime?.llm?.complete).toBe("function");
+    expect(runtime?.llmProvider).toBe("OpenAI");
   });
 
   it("ignores commented Redis examples and detects them after opt-in", async () => {

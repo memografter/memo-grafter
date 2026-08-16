@@ -72,7 +72,7 @@ npx memo-grafter studio
 
 MemoGrafter runs server-side on Node.js 18 or newer. The built-in storage backend uses PostgreSQL with `pgvector`.
 
-The CLI migration and Studio commands use provider-independent entry points. Database setup and browsing do not require an LLM provider SDK. Prompt Preview and runtime memory extraction require the adapters you configure.
+The CLI migration and Studio commands use provider-independent entry points. Database setup and browsing do not require an LLM provider SDK. Invoke Preview retrieval and runtime memory extraction require the adapters you configure.
 
 `init` creates MemoGrafter-owned project files under `src/memo-grafter/`:
 
@@ -81,7 +81,7 @@ The CLI migration and Studio commands use provider-independent entry points. Dat
 
 `migrate` creates or updates MemoGrafter-owned database infrastructure. Run it once per database or deployment, not during normal app startup.
 
-`studio` starts a local MemoGrafter Studio host for session browsing, graph inspection, read-only table browsing, and Prompt Preview.
+`studio` starts a local MemoGrafter Studio host for session browsing, graph inspection, read-only table browsing, and Invoke Preview.
 
 To pass a database URL directly:
 

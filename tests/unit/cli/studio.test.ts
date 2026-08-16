@@ -31,7 +31,7 @@ describe("memo-grafter studio", () => {
       expect(html.body).toContain("tab-graph");
       expect(html.body).toContain("tab-tables");
       expect(html.body).toContain("tab-preview");
-      expect(html.body).toContain("Prompt Preview");
+      expect(html.body).toContain("Invoke Preview");
       expect(html.body).toContain("workspace-panel");
       expect(html.body).toContain("graph-view-mode");
       expect(html.body).toContain("graph-edge-mode");
@@ -162,12 +162,16 @@ describe("memo-grafter studio", () => {
     expect(html).toContain("elements.detailsSection.hidden = singlePane");
     expect(html).toContain('elements.detailsSection.style.display = singlePane ? "none" : ""');
     expect(html).toContain("preview-query");
-    expect(html).toContain("preview-mode");
+    expect(html).toContain("preview-profile");
     expect(html).toContain("Run preview");
-    expect(html).toContain("Copy prompt");
+    expect(html).toContain("Copy request JSON");
+    expect(html).toContain("Final Prompt — Plain Text");
+    expect(html).toContain("Run with LLM");
+    expect(html).toContain("provider API key available to MemoGrafter Studio");
+    expect(html).toContain("Provider usage charges may apply");
     expect(html).toContain("prompt-preview-output");
     expect(html).toContain("tokenUsageText");
-    expect(html).toContain('"/api/sessions/" + encodeURIComponent(state.selectedSessionId) + "/preview"');
+    expect(html).toContain('"/api/sessions/" + encodeURIComponent(state.selectedSessionId) + "/invocation-preview"');
     expect(html).not.toContain("Prompt Preview workspace shell");
     expect(html).not.toContain("read-only table UI lands in Phase 4");
     expect(html).toContain("Memory type");

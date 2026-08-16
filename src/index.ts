@@ -12,6 +12,8 @@ export { GrafterPipeline } from "./retrieval/GrafterPipeline.js";
 export { GraftRelevancePipeline } from "./retrieval/GraftRelevancePipeline.js";
 export { IngestPipeline } from "./ingestion/conversation/IngestPipeline.js";
 export { RetrieverPipeline } from "./retrieval/RetrieverPipeline.js";
+export { buildInvocationPlan } from "./invocation/InvocationPlanner.js";
+export { renderInvocationRequestPlainText } from "./invocation/renderInvocationRequest.js";
 export {
   createStudioPreviewService,
   UnavailableStudioPreviewService,
@@ -95,7 +97,7 @@ export type {
   WorkerAgentConfig,
 } from "./agents/fleet/types.js";
 export type {
-  StudioPreviewMode,
+  StudioPreviewCompletionResult,
   StudioPreviewRequest,
   StudioPreviewResult,
   StudioPreviewService,
@@ -113,4 +115,14 @@ export type {
   DecayScoringPassOptions,
 } from "./maintenance/index.js";
 export type { FleetAgentRecord, GraphStore } from "./store/index.js";
+export type {
+  InvocationHistorySource,
+  InvocationMemoryContext,
+  InvocationPlan,
+  InvocationPlanningContext,
+  InvocationProfile,
+  InvocationRetrievalDetails,
+  InvocationRetrievalStatus,
+  PlannedMemoryContext,
+} from "./invocation/types.js";
 export type { MigrationReport, MigrationReportItem, MigrationItemStatus } from "./schema/index.js";
