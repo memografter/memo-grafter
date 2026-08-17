@@ -51,7 +51,11 @@ describe("MemoGrafter external application APIs", () => {
   it("retrieves fresh context without an LLM completion or cache", async () => {
     const { memo, llm, embedder } = createMemo();
     const searchMemories = vi.fn(async () => []);
-    (memo as unknown as { store: Partial<GraphStore> }).store = { searchMemories };
+    (memo as unknown as { store: Partial<GraphStore> }).store = {
+      searchMemories,
+      getPinnedTopics: vi.fn(async () => []),
+      getMemoriesBySession: vi.fn(async () => []),
+    };
 
     const result = await memo.context({
       sessionId: "session-1",
@@ -72,6 +76,27 @@ describe("MemoGrafter external application APIs", () => {
     );
     expect(result).toMatchObject({ facts: [], nodes: [], tokenCount: 0, tokenBudget: 800 });
     expect(llm.complete).not.toHaveBeenCalled();
+  });
+
+  it("places multiple pinned topics before recall context in pin order", async () => {
+    const { memo } = createMemo();
+    const topics = ["Planning", "Deployment"].map((label, index) => ({
+      id: `topic-${index + 1}`, sessionId: "session-1", segmentId: `segment-${index + 1}`,
+      label, summary: `${label} summary`, embedding: [], messageRange: [index, index],
+      topicOrder: index, driftScore: 0, agentColor: null, fleetId: null, agentId: null,
+      pinned: true, pinnedAt: new Date(index), createdAt: new Date(index),
+    })) as TopicNode[];
+    (memo as unknown as { store: Partial<GraphStore> }).store = {
+      searchMemories: vi.fn(async () => []),
+      getPinnedTopics: vi.fn(async () => topics),
+      getMemoriesBySession: vi.fn(async () => []),
+    };
+
+    const result = await memo.context({ sessionId: "session-1", query: "unrelated query" });
+
+    expect(result.pinnedNodes?.map((topic) => topic.label)).toEqual(["Planning", "Deployment"]);
+    expect(result.systemPrompt.indexOf("## Planning")).toBeLessThan(result.systemPrompt.indexOf("## Deployment"));
+    expect(result.facts).toEqual([]);
   });
 
   it("validates context retrieval options", () => {

@@ -20,6 +20,9 @@ function createAgent() {
       order.push("restoreTopic");
       return true;
     }),
+    pinTopic: vi.fn(async () => true),
+    unpinTopic: vi.fn(async () => true),
+    getPinnedTopics: vi.fn(async () => [{ id: "topic-1" }]),
     getMemoryHistory: vi.fn(async () => {
       order.push("getMemoryHistory");
       return { entries: [], edges: [], currentMemory: null };
@@ -89,5 +92,15 @@ describe("MemoGrafterAgent lifecycle APIs", () => {
     expect(core.getMemoryHistory).toHaveBeenCalledWith("memory-1", { sessionId });
     expect(core.getMemoryHistory).toHaveBeenCalledWith("user", "location", { sessionId });
     expect(core.getMemoryDiff).toHaveBeenCalledWith("memory-a", "memory-b");
+  });
+
+  it("scopes persistent pin APIs to the agent session", async () => {
+    const { agent, core } = createAgent();
+    await expect(agent.pinTopic("topic-1")).resolves.toBe(true);
+    await expect(agent.getPinnedTopics()).resolves.toEqual([{ id: "topic-1" }]);
+    await expect(agent.unpinTopic("topic-1")).resolves.toBe(true);
+    expect(core.pinTopic).toHaveBeenCalledWith("session-1", "topic-1");
+    expect(core.getPinnedTopics).toHaveBeenCalledWith("session-1");
+    expect(core.unpinTopic).toHaveBeenCalledWith("session-1", "topic-1");
   });
 });

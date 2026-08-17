@@ -48,6 +48,9 @@ export interface GraphStore {
   forgetMemories(memoryNodeIds: string[]): Promise<number>;
   suppressTopic(topicNodeId: string): Promise<boolean>;
   restoreTopic(topicNodeId: string): Promise<boolean>;
+  pinTopic(sessionId: string, topicNodeId: string): Promise<boolean>;
+  unpinTopic(sessionId: string, topicNodeId: string): Promise<boolean>;
+  getPinnedTopics(sessionId: string): Promise<TopicNode[]>;
   markMemoryNodesConflicting(memoryNodeIds: string[]): Promise<number>;
   markMemoryNodeSuperseded(memoryNodeId: string, supersededBy: string): Promise<boolean>;
   markMemoryNodeDecayed(memoryNodeId: string): Promise<boolean>;

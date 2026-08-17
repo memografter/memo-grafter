@@ -67,6 +67,7 @@ export type {
   DatabaseQueryTelemetryEvent,
   QueueJobTelemetryEvent,
   Message,
+  PinnedContextResult,
   RememberOptions,
   RetrievalResult,
   RetrieverConfig,

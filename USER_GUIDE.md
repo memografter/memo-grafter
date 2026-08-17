@@ -1849,6 +1849,9 @@ Common `MemoGrafterAgent` methods:
 - `getActiveSegments()`: inspect topic segments.
 - `setSessionTags(tags)`: replace tags on the current session and apply them to future ingested memories.
 - `getSessionTags()`: read the current agent's normalized session tags.
+- `pinTopic(topicId)`: persist an active topic as required system context for this session.
+- `unpinTopic(topicId)`: stop automatically injecting a pinned topic.
+- `getPinnedTopics()`: list active pinned topics in deterministic pin order.
 - `clearSession()`: explicitly clear local history and stored session memory.
 - `forget(memoryId)`: soft-forget a memory node so it is excluded from future recall, grafting, absorption, and crawler maintenance.
 - `forgetMany(memoryIds)`: soft-forget several memory nodes and return the number changed.

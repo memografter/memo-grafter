@@ -17,7 +17,7 @@ export interface InvocationRetrievalDetails {
 
 export interface InvocationMemoryContext {
   content: string | null;
-  components?: Array<{ kind: "local-topics" | "recalled-memory"; content: string; tokenCount: number }>;
+  components?: Array<{ kind: "pinned-topics" | "local-topics" | "recalled-memory"; content: string; tokenCount: number }>;
   tokenCount: number;
   tokenBudget?: number;
 }

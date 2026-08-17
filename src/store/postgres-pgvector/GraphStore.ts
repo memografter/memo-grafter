@@ -32,6 +32,8 @@ interface TopicNodeRow {
   agent_id: string | null;
   suppressed: boolean | null;
   suppressed_at: Date | null;
+  pinned: boolean | null;
+  pinned_at: Date | null;
   created_at: Date;
 }
 
@@ -231,6 +233,8 @@ export class PostgresGraphStore implements GraphStore {
         agent_id      TEXT,
         suppressed    BOOLEAN NOT NULL DEFAULT FALSE,
         suppressed_at TIMESTAMPTZ,
+        pinned        BOOLEAN NOT NULL DEFAULT FALSE,
+        pinned_at     TIMESTAMPTZ,
         created_at    TIMESTAMPTZ DEFAULT NOW(),
         UNIQUE (segment_id)
       )
@@ -309,6 +313,9 @@ export class PostgresGraphStore implements GraphStore {
       ALTER TABLE mg_topic_nodes
       ADD COLUMN IF NOT EXISTS suppressed_at TIMESTAMPTZ
     `;
+
+    await this.sql`ALTER TABLE mg_topic_nodes ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE`;
+    await this.sql`ALTER TABLE mg_topic_nodes ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ`;
 
     await this.sql`
       ALTER TABLE mg_topic_nodes
@@ -986,6 +993,42 @@ export class PostgresGraphStore implements GraphStore {
     `;
 
     return rows.length > 0;
+  }
+
+  async pinTopic(sessionId: string, topicNodeId: string): Promise<boolean> {
+    const rows = await this.sql<{ id: string }[]>`
+      UPDATE mg_topic_nodes
+      SET pinned = TRUE, pinned_at = COALESCE(pinned_at, NOW())
+      WHERE id = ${topicNodeId}
+        AND session_id = ${sessionId}
+        AND suppressed = FALSE
+        AND pinned = FALSE
+      RETURNING id
+    `;
+    return rows.length > 0;
+  }
+
+  async unpinTopic(sessionId: string, topicNodeId: string): Promise<boolean> {
+    const rows = await this.sql<{ id: string }[]>`
+      UPDATE mg_topic_nodes
+      SET pinned = FALSE, pinned_at = NULL
+      WHERE id = ${topicNodeId}
+        AND session_id = ${sessionId}
+        AND pinned = TRUE
+      RETURNING id
+    `;
+    return rows.length > 0;
+  }
+
+  async getPinnedTopics(sessionId: string): Promise<TopicNode[]> {
+    const rows = await this.sql<TopicNodeRow[]>`
+      SELECT * FROM mg_topic_nodes
+      WHERE session_id = ${sessionId}
+        AND pinned = TRUE
+        AND suppressed = FALSE
+      ORDER BY pinned_at ASC, topic_order ASC, created_at ASC, id ASC
+    `;
+    return rows.map((row) => this.rowToNode(row));
   }
 
   async markMemoryNodesConflicting(memoryNodeIds: string[]): Promise<number> {
@@ -2081,6 +2124,12 @@ export class PostgresGraphStore implements GraphStore {
     `;
 
     await this.sql`
+      CREATE INDEX IF NOT EXISTS mg_topic_nodes_pinned_idx
+      ON mg_topic_nodes(session_id, pinned_at)
+      WHERE pinned = TRUE
+    `;
+
+    await this.sql`
       CREATE INDEX IF NOT EXISTS mg_topic_nodes_tags_idx
       ON mg_topic_nodes USING GIN(tags)
     `;
@@ -2263,6 +2312,8 @@ export class PostgresGraphStore implements GraphStore {
       agentId: row.agent_id,
       suppressed: row.suppressed ?? false,
       suppressedAt: row.suppressed_at,
+      pinned: row.pinned ?? false,
+      pinnedAt: row.pinned_at,
       createdAt: row.created_at,
     };
   }

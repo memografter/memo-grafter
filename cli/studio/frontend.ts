@@ -2375,7 +2375,7 @@ export function renderStudioHtml(state: StudioFrontendState): string {
           const columns = {
             mg_message_buffer: ["session_id", "message_index", "role", "content"],
             mg_segments: ["id", "session_id", "start_index", "end_index", "topic_order", "drift_score", "created_at"],
-            mg_topic_nodes: ["id", "session_id", "segment_id", "label", "summary", "embedding", "tags", "source", "message_range", "topic_order", "drift_score", "agent_color", "fleet_id", "agent_id", "suppressed", "suppressed_at", "created_at"],
+            mg_topic_nodes: ["id", "session_id", "segment_id", "label", "summary", "embedding", "tags", "source", "message_range", "topic_order", "drift_score", "agent_color", "fleet_id", "agent_id", "suppressed", "suppressed_at", "pinned", "pinned_at", "created_at"],
             mg_topic_edges: ["src_id", "dst_id", "weight", "type"],
             mg_memory_nodes: ["id", "segment_id", "topic_node_id", "agent_id", "session_id", "memory_type", "source_type", "subject", "predicate", "value", "confidence", "embedding", "tags", "source", "source_url", "source_title", "superseded_by", "decayed", "forgotten", "forgotten_at", "has_conflict", "agent_color", "fleet_id", "created_at"],
             mg_memory_edges: ["id", "source_id", "target_id", "edge_type", "weight", "created_at"],
@@ -3338,6 +3338,7 @@ export function renderStudioHtml(state: StudioFrontendState): string {
             '<span class="overview-node-body">' +
               '<span class="overview-node-topline">' +
                 '<span class="overview-node-kind">' + escapeHtml(node.kind) + '</span>' +
+                (node.kind === "topic" && node.raw && node.raw.pinned ? '<span class="badge">Pinned</span>' : "") +
                 '<span class="badge">' + escapeHtml(badge.label) + '</span>' +
               '</span>' +
               '<span class="overview-node-title">' + escapeHtml(truncate(node.title, 54)) + '</span>' +
@@ -3680,6 +3681,7 @@ export function renderStudioHtml(state: StudioFrontendState): string {
             detailTextRow("Summary", raw.summary || "None"),
             detailRow("Tags", tagsMarkup(node.tags)),
             detailTextRow("Lifecycle", lifecycle),
+            detailTextRow("Pinned", raw.pinned ? "Yes" + (raw.pinnedAt ? " since " + formatDate(raw.pinnedAt) : "") : "No"),
             detailTextRow("Topic order", raw.topicOrder == null ? "Unknown" : String(raw.topicOrder)),
             detailTextRow("Created", formatDate(raw.createdAt))
           ].join("")) +
@@ -3765,7 +3767,8 @@ export function renderStudioHtml(state: StudioFrontendState): string {
           let action = "";
 
           if (node.kind === "topic" && !node.raw.suppressed) {
-            action = '<button class="icon-button" type="button" data-lifecycle-action="suppress"' + (state.actionPending ? " disabled" : "") + '>Suppress topic</button>' +
+            action = '<button class="icon-button" type="button" data-lifecycle-action="' + (node.raw.pinned ? "unpin" : "pin") + '"' + (state.actionPending ? " disabled" : "") + '>' + (node.raw.pinned ? "Unpin topic" : "Pin topic") + '</button>' +
+              '<button class="icon-button" type="button" data-lifecycle-action="suppress"' + (state.actionPending ? " disabled" : "") + '>Suppress topic</button>' +
               '<button class="primary-button" type="button" data-graft-action="open"' + (state.actionPending ? " disabled" : "") + '>Graft to session</button>';
           }
           if (node.kind === "topic" && graftOriginForTopic(node.id)) {
@@ -3915,20 +3918,30 @@ export function renderStudioHtml(state: StudioFrontendState): string {
 
         async function runLifecycleAction(node, action) {
           if (!state.selectedSessionId || state.actionPending) return;
-          if (node.kind !== "topic" || action !== "suppress") return;
+          if (node.kind !== "topic" || !["suppress", "pin", "unpin"].includes(action)) return;
 
           const sessionId = state.selectedSessionId;
-          const url = "/api/sessions/" + encodeURIComponent(sessionId) + "/nodes/" + encodeURIComponent(node.id) + "/suppress";
+          const previousPinned = Boolean(node.raw && node.raw.pinned);
+          const previousPinnedAt = node.raw && node.raw.pinnedAt;
+          if (action === "pin" || action === "unpin") {
+            node.raw.pinned = action === "pin";
+            node.raw.pinnedAt = action === "pin" ? new Date().toISOString() : null;
+          }
+          const url = action === "suppress"
+            ? "/api/sessions/" + encodeURIComponent(sessionId) + "/nodes/" + encodeURIComponent(node.id) + "/suppress"
+            : "/api/sessions/" + encodeURIComponent(sessionId) + "/topics/" + encodeURIComponent(node.id) + "/pin";
           state.actionPending = true;
           state.actionStatus = null;
           renderEntityDetails(node);
 
           try {
-            const result = await fetchJson(url, { method: "POST" });
+            const result = await fetchJson(url, { method: action === "pin" ? "PUT" : action === "unpin" ? "DELETE" : "POST" });
             state.actionStatus = {
               nodeId: node.id,
               kind: "success",
-              message: lifecycleActionMessage(action, result.changed)
+              message: action === "pin" ? "Topic pinned for future invocations."
+                : action === "unpin" ? "Topic unpinned."
+                  : lifecycleActionMessage(action, result.changed)
             };
             const refreshed = state.activeTab === "tables"
               ? await loadTables(sessionId, { force: true })
@@ -3941,6 +3954,10 @@ export function renderStudioHtml(state: StudioFrontendState): string {
               };
             }
           } catch (error) {
+            if (action === "pin" || action === "unpin") {
+              node.raw.pinned = previousPinned;
+              node.raw.pinnedAt = previousPinnedAt;
+            }
             state.actionStatus = {
               nodeId: node.id,
               kind: "error",

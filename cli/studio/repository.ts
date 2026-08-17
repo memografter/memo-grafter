@@ -59,6 +59,8 @@ export interface StudioTopicSearchResult {
   agentId: string | null;
   suppressed: boolean;
   suppressedAt: Date | null;
+  pinned: boolean;
+  pinnedAt: Date | null;
   createdAt: Date;
 }
 
@@ -110,6 +112,8 @@ interface TopicSearchRow {
   agent_id: string | null;
   suppressed: boolean | null;
   suppressed_at: Date | null;
+  pinned: boolean | null;
+  pinned_at: Date | null;
   created_at: Date;
 }
 
@@ -368,6 +372,8 @@ export class StudioRepository {
           agent_id,
           suppressed,
           suppressed_at,
+          pinned,
+          pinned_at,
           created_at
         FROM mg_topic_nodes
         WHERE session_id = ${sessionId}
@@ -535,6 +541,8 @@ export class StudioRepository {
       agentId: row.agent_id,
       suppressed: row.suppressed ?? false,
       suppressedAt: row.suppressed_at,
+      pinned: row.pinned ?? false,
+      pinnedAt: row.pinned_at,
       createdAt: row.created_at,
     };
   }

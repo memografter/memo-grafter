@@ -24,12 +24,16 @@ import type {
   MemoryHistoryResult,
   MemoGrafterConfig,
   Message,
+  PinnedContextResult,
   RetrievalResult,
   RetrieverConfig,
   TagFilterOptions,
   TopicNode,
   TopicSegment,
 } from "./types.js";
+import { composePinnedTopicContext } from "../prompts/pinnedTopicPrompt.js";
+import { buildFactRetrievalPrompt, formatFactBlock } from "../prompts/factRetrievalPrompt.js";
+import { countApproxTokens } from "../utils/text/tokenCount.js";
 
 export class MemoGrafter {
   readonly llm: LLMAdapter;
@@ -41,6 +45,7 @@ export class MemoGrafter {
   private readonly ingestQueue: IngestQueue | null;
   private readonly graphTopK: number;
   private readonly graphHopDepth: number;
+  private readonly pinnedTokenBudget: number;
 
   constructor(config: MemoGrafterConfig) {
     this.assertServerEnvironment();
@@ -58,6 +63,7 @@ export class MemoGrafter {
     const hopDepth = config.graph?.hopDepth ?? 1;
     const bufferSize = config.inject?.bufferSize ?? 1;
     const tokenBudget = config.inject?.tokenBudget ?? 4000;
+    this.pinnedTokenBudget = tokenBudget;
 
     this.llm = config.llm;
     this.embedder = config.embedder;
@@ -164,8 +170,41 @@ export class MemoGrafter {
     const { sessionId: _sessionId, query: _query, ...options } = input;
     this.validateRetrieverOptions(options);
 
+    return this.buildContext(sessionId, query, options);
+  }
+
+  private async buildContext(sessionId: string, query: string, options: RetrieverConfig): Promise<RetrievalResult> {
     const pipeline = new RetrieverPipeline(this.store, this.embedder, options, null);
-    return pipeline.run(query, sessionId);
+    const recalled = await pipeline.run(query, sessionId);
+    return this.combinePinnedContext(sessionId, recalled);
+  }
+
+  /** @internal Combine an existing recall result with persistent session pins. */
+  async combinePinnedContext(
+    sessionId: string,
+    recalled: RetrievalResult,
+    pinnedContext?: PinnedContextResult,
+  ): Promise<RetrievalResult> {
+    const pinned = pinnedContext ?? await this.getPinnedContext(sessionId);
+    const pinnedIds = new Set(pinned.nodes.map((node) => node.id));
+    const facts = recalled.facts.filter((fact) => !pinnedIds.has(fact.topicNodeId));
+    const nodes = recalled.nodes.filter((node) => !pinnedIds.has(node.id));
+    const factsByTopic = new Map<string, typeof facts>();
+    for (const fact of facts) factsByTopic.set(fact.topicNodeId, [...(factsByTopic.get(fact.topicNodeId) ?? []), fact]);
+    const recalledBlocks = nodes.map((node) => formatFactBlock(factsByTopic.get(node.id) ?? [], node));
+    const recalledPrompt = facts.length > 0 ? buildFactRetrievalPrompt(recalledBlocks) : "";
+    const systemPrompt = [pinned.systemPrompt, recalledPrompt].filter(Boolean).join("\n\n");
+    return {
+      ...recalled,
+      facts,
+      nodes: [...pinned.nodes, ...nodes],
+      pinnedNodes: pinned.nodes,
+      pinnedContextTruncated: pinned.truncated,
+      systemPrompt,
+      tokenCount: pinned.tokenCount + (facts.length > 0 ? countApproxTokens(recalledPrompt) : 0),
+      ...(recalled.tokenBudget !== undefined ? { tokenBudget: recalled.tokenBudget } : {}),
+      ...(pinned.tokenBudget !== undefined ? { pinnedTokenBudget: pinned.tokenBudget } : {}),
+    };
   }
 
   async enqueueIngest(messages: Message[], sessionId: string, options: IngestOptions = {}): Promise<void> {
@@ -218,6 +257,41 @@ export class MemoGrafter {
 
   inject(sessionId: string, topicIds: string[]): Promise<InjectionResult> {
     return this.grafterPipeline.run(sessionId, topicIds);
+  }
+
+  pinTopic(sessionId: string, topicId: string): Promise<boolean> {
+    return this.store.pinTopic(
+      this.requireNonBlankString(sessionId, "sessionId"),
+      this.requireNonBlankString(topicId, "topicId"),
+    );
+  }
+
+  unpinTopic(sessionId: string, topicId: string): Promise<boolean> {
+    return this.store.unpinTopic(
+      this.requireNonBlankString(sessionId, "sessionId"),
+      this.requireNonBlankString(topicId, "topicId"),
+    );
+  }
+
+  getPinnedTopics(sessionId: string): Promise<TopicNode[]> {
+    return this.store.getPinnedTopics(this.requireNonBlankString(sessionId, "sessionId"));
+  }
+
+  async getPinnedContext(sessionId: string): Promise<PinnedContextResult> {
+    const nodes = await this.getPinnedTopics(sessionId);
+    if (nodes.length === 0) return { systemPrompt: "", nodes: [], memories: [], tokenCount: 0, tokenBudget: this.pinnedTokenBudget, truncated: false };
+    const allMemories = await this.store.getMemoriesBySession(sessionId);
+    const activeMemories = allMemories.filter((memory) => nodes.some((node) => node.id === memory.topicNodeId)
+      && !memory.forgotten && !memory.decayed && memory.supersededBy == null);
+    const composed = composePinnedTopicContext(nodes, activeMemories, this.pinnedTokenBudget);
+    return {
+      systemPrompt: composed.systemPrompt,
+      nodes,
+      memories: activeMemories,
+      tokenCount: composed.tokenCount,
+      tokenBudget: this.pinnedTokenBudget,
+      truncated: composed.truncated,
+    };
   }
 
   async forget(memoryId: string): Promise<boolean> {

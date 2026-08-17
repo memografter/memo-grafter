@@ -31,6 +31,7 @@ export interface MemoGrafterConfigOverrides {
   llm?: LLMAdapter;
   embedder?: EmbedAdapter;
   systemPrompt?: string;
+  sessionId?: string;
   drift?: Partial<MemoGrafterDriftConfig>;
   graph?: Partial<MemoGrafterGraphConfig>;
   inject?: Partial<MemoGrafterInjectConfig>;
@@ -80,6 +81,9 @@ export async function resolveMemoGrafterConfig(
     ...(overrides.systemPrompt !== undefined
       ? { systemPrompt: overrides.systemPrompt }
       : projectConfig.systemPrompt !== undefined ? { systemPrompt: projectConfig.systemPrompt } : {}),
+    ...((overrides.sessionId ?? projectConfig.sessionId) !== undefined
+      ? { sessionId: overrides.sessionId ?? projectConfig.sessionId }
+      : {}),
     ...(mergeOptional(projectConfig.drift, overrides.drift, "drift")),
     ...(mergeOptional(projectConfig.graph, overrides.graph, "graph")),
     ...(mergeOptional(projectConfig.inject, overrides.inject, "inject")),

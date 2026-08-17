@@ -14,6 +14,8 @@ export interface StudioApiStore {
   getMemoriesBySession(sessionId: string): Promise<unknown[]>;
   getMessagesBySession(sessionId: string, startIndex?: number, endIndex?: number): Promise<unknown[]>;
   suppressTopic(nodeId: string): Promise<boolean>;
+  pinTopic(sessionId: string, nodeId: string): Promise<boolean>;
+  unpinTopic(sessionId: string, nodeId: string): Promise<boolean>;
   getTopicNode(topicNodeId: string, sessionId?: string): Promise<StudioGraftTopic | null>;
   getGraftRegistry(sessionId: string): Promise<StudioGraftRegistryEntry[]>;
   graftTopics(request: StudioGraftTopicsRequest): Promise<StudioGraftTopicsResult>;
@@ -240,6 +242,15 @@ export async function handleStudioApiRequest(
       }
 
       await sendSuppressTopic(response, context, sessionId, itemId);
+      return;
+    }
+
+    if (collection === "topics" && itemId && action === "pin" && route.segments.length === 5) {
+      if (method !== "PUT" && method !== "DELETE") {
+        sendMethodNotAllowed(response, ["PUT", "DELETE"]);
+        return;
+      }
+      await sendPinTopic(response, context, sessionId, itemId, method === "PUT");
       return;
     }
 
@@ -628,6 +639,32 @@ async function sendSuppressTopic(
   const changed = await context.store.suppressTopic(nodeId);
 
   sendJson(response, 200, { sessionId, nodeId, action: "suppress", changed });
+}
+
+async function sendPinTopic(
+  response: ServerResponse,
+  context: StudioApiContext,
+  sessionId: string,
+  nodeId: string,
+  pinned: boolean,
+): Promise<void> {
+  if (!await context.repository.sessionExists(sessionId)) {
+    sendJson(response, 404, { error: `Session '${sessionId}' was not found.` });
+    return;
+  }
+  const topic = await context.store.getTopicNode(nodeId, sessionId);
+  if (!topic) {
+    sendJson(response, 404, { error: `Topic node '${nodeId}' was not found in session '${sessionId}'.` });
+    return;
+  }
+  if (pinned && topic.suppressed) {
+    sendJson(response, 409, { error: "A suppressed topic cannot be pinned. Restore it first." });
+    return;
+  }
+  const changed = pinned
+    ? await context.store.pinTopic(sessionId, nodeId)
+    : await context.store.unpinTopic(sessionId, nodeId);
+  sendJson(response, 200, { sessionId, nodeId, pinned, changed });
 }
 
 function matchRoute(requestUrl: string | undefined): RouteMatch | null {

@@ -31,7 +31,7 @@ import type { PlannedMemoryContext } from "../invocation/types.js";
 
 export class MemoGrafterAgent {
   private readonly core: MemoGrafter;
-  private readonly sessionId = randomUUID();
+  private readonly sessionId: string;
   private readonly history: Message[] = [];
   private readonly ingestionHistory: Message[] = [];
   private readonly baseSystemPrompt: string;
@@ -45,6 +45,7 @@ export class MemoGrafterAgent {
 
   constructor(config: MemoGrafterConfig) {
     this.core = new MemoGrafter(config);
+    this.sessionId = config.sessionId?.trim() || randomUUID();
     this.baseSystemPrompt = config.systemPrompt ?? "";
     this.recentWindowSize = config.inject?.recentWindowSize ?? 20;
     this.recallLimit = config.inject?.recallLimit ?? 6;
@@ -208,6 +209,21 @@ export class MemoGrafterAgent {
     return [...this.sessionTags];
   }
 
+  async pinTopic(topicId: string): Promise<boolean> {
+    await this.pendingIngest;
+    return this.core.pinTopic(this.sessionId, topicId);
+  }
+
+  async unpinTopic(topicId: string): Promise<boolean> {
+    await this.pendingIngest;
+    return this.core.unpinTopic(this.sessionId, topicId);
+  }
+
+  async getPinnedTopics(): Promise<TopicNode[]> {
+    await this.pendingIngest;
+    return this.core.getPinnedTopics(this.sessionId);
+  }
+
   async getGraftRegistry(): Promise<GraftRegistryEntry[]> {
     await this.pendingIngest;
     return this.core.store.getGraftRegistry(this.sessionId);
@@ -350,26 +366,37 @@ export class MemoGrafterAgent {
       },
       memoryContext: { content: null, tokenCount: 0 },
     });
+    const nodeCount = await this.core.store.getSessionNodeCount(this.sessionId);
+    if (nodeCount === 0) return empty("not-applicable");
+    const pinned = await this.core.getPinnedContext(this.sessionId);
+    let recallError: unknown;
+    let recalled: RetrievalResult;
     try {
-      const nodeCount = await this.core.store.getSessionNodeCount(this.sessionId);
-      if (nodeCount === 0) return empty("not-applicable");
-
-      const result = await this.recall(query, {
+      recalled = await this.recall(query, {
         limit: options.limit,
         minSimilarity: options.minSimilarity,
       });
+    } catch (error: unknown) {
+      recallError = error;
+      console.warn("MemoGrafter recall warning:", error);
+      recalled = { facts: [], nodes: [], systemPrompt: "", tokenCount: 0 };
+    }
+    const result = await this.core.combinePinnedContext(this.sessionId, recalled, pinned);
 
-      if (result.facts.length === 0) return empty("no-match");
-      return {
+    if (result.facts.length === 0 && (result.pinnedNodes?.length ?? 0) === 0) {
+      return empty(recallError ? "failed" : "no-match", recallError);
+    }
+    return {
         placement: "message",
         retrieval: {
-          status: "matched",
+          status: recallError ? "failed" : "matched",
           strategy: "recall",
           topics: result.nodes,
           memories: result.facts,
           limit: options.limit,
           minSimilarity: options.minSimilarity,
           sessionIds: [this.sessionId],
+          ...(recallError ? { error: { message: recallError instanceof Error ? recallError.message : String(recallError), recoverable: true } } : {}),
         },
         memoryContext: {
           content: result.systemPrompt,
@@ -377,10 +404,6 @@ export class MemoGrafterAgent {
           ...(result.tokenBudget !== undefined ? { tokenBudget: result.tokenBudget } : {}),
         },
       };
-    } catch (error: unknown) {
-      console.warn("MemoGrafter recall warning:", error);
-      return empty("failed", error);
-    }
   }
 
   close(): Promise<void> {

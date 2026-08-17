@@ -227,6 +227,8 @@ Studio is local development tooling. Do not bind it to a public interface or pro
 
 Applications can control active memory without losing provenance:
 
+- `pinTopic(topicId)` persists an active topic as required context for every invocation in that session.
+- `unpinTopic(topicId)` removes the topic from required context; multiple pins are injected in pin order.
 - `forget(memoryId)` hides an individual memory from active recall and grafting.
 - `forgetMany(memoryIds)` hides multiple memories.
 - `suppressTopic(topicId)` hides a topic from active reads, recall, grafting, absorption, and maintenance.
