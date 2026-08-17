@@ -169,6 +169,18 @@ describe("PostgresGraphStore maintenance methods", () => {
     expect(restored.calls[0]?.text).toContain("suppressed_at = NULL");
   });
 
+  it("pins and unpins topics idempotently within a session", async () => {
+    const pinned = createStoreWithSql([[{ id: "topic-1" }]]);
+    const unpinned = createStoreWithSql([[{ id: "topic-1" }]]);
+    await expect(pinned.store.pinTopic("session-1", "topic-1")).resolves.toBe(true);
+    await expect(unpinned.store.unpinTopic("session-1", "topic-1")).resolves.toBe(true);
+    expect(pinned.calls[0]?.text).toContain("pinned = TRUE");
+    expect(pinned.calls[0]?.text).toContain("suppressed = FALSE");
+    expect(pinned.calls[0]?.values).toEqual(["topic-1", "session-1"]);
+    expect(unpinned.calls[0]?.text).toContain("pinned = FALSE");
+    expect(unpinned.calls[0]?.text).toContain("pinned_at = NULL");
+  });
+
   it("excludes forgotten memories and suppressed topics from memory search", async () => {
     const { store, calls } = createStoreWithSql([[]]);
 

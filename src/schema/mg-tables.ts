@@ -1,7 +1,7 @@
 import { mgExtension, mgIndex, mgTable } from "./builders.js";
 
 export const memoGrafterMigrationTableName = "mg_migrations";
-export const memoGrafterCurrentMigrationVersion = 1;
+export const memoGrafterCurrentMigrationVersion = 2;
 
 export const memoGrafterExtensions = [
   mgExtension({
@@ -59,6 +59,8 @@ export const memoGrafterTables = [
       { name: "agent_id", type: "text", nullable: true },
       { name: "suppressed", type: "boolean", default: "false" },
       { name: "suppressed_at", type: "timestamptz", nullable: true },
+      { name: "pinned", type: "boolean", default: "false" },
+      { name: "pinned_at", type: "timestamptz", nullable: true },
       { name: "created_at", type: "timestamptz", default: "now()" },
     ],
     constraints: ["UNIQUE (segment_id)"],
@@ -176,6 +178,7 @@ export const memoGrafterIndexes = [
   mgIndex({ name: "mg_segments_session_idx", table: "mg_segments", description: "Segment lookup by session and topic order." }),
   mgIndex({ name: "mg_nodes_session_idx", table: "mg_topic_nodes", description: "Topic lookup by session and topic order." }),
   mgIndex({ name: "idx_topic_nodes_active_lifecycle", table: "mg_topic_nodes", description: "Active topic lifecycle lookup." }),
+  mgIndex({ name: "mg_topic_nodes_pinned_idx", table: "mg_topic_nodes", description: "Ordered pinned-topic lookup by session." }),
   mgIndex({ name: "mg_topic_nodes_tags_idx", table: "mg_topic_nodes", description: "Topic tag lookup." }),
   mgIndex({ name: "mg_nodes_fleet_idx", table: "mg_topic_nodes", description: "Fleet topic lookup by color." }),
   mgIndex({ name: "mg_fleet_agents_fleet_idx", table: "mg_fleet_agents", description: "Fleet agent lookup by color." }),

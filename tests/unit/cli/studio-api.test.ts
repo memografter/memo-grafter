@@ -256,6 +256,22 @@ describe("MemoGrafter Studio API", () => {
     }
   });
 
+  it("pins and unpins an active topic through the Studio API", async () => {
+    const context = makeContext();
+    const server = createApiServer(context);
+    const port = await listenOnAvailablePort(server, "127.0.0.1", 0);
+    try {
+      const pinned = await requestJson(port, "/api/sessions/session-1/topics/topic-1/pin", { method: "PUT" });
+      const unpinned = await requestJson(port, "/api/sessions/session-1/topics/topic-1/pin", { method: "DELETE" });
+      expect(pinned.body).toMatchObject({ nodeId: "topic-1", pinned: true, changed: true });
+      expect(unpinned.body).toMatchObject({ nodeId: "topic-1", pinned: false, changed: true });
+      expect(context.store.pinTopic).toHaveBeenCalledWith("session-1", "topic-1");
+      expect(context.store.unpinTopic).toHaveBeenCalledWith("session-1", "topic-1");
+    } finally {
+      await closeServer(server);
+    }
+  });
+
   it("updates session labels after verifying the session exists", async () => {
     const context = makeContext();
     const server = createApiServer(context);
@@ -371,6 +387,8 @@ function makeContext(repositoryOverrides: Partial<StudioApiContext["repository"]
       getMemoriesBySession: vi.fn(async () => [memory]),
       getMessagesBySession: vi.fn(async () => [{ role: "user", content: "hello" }]),
       suppressTopic: vi.fn(async () => true),
+      pinTopic: vi.fn(async () => true),
+      unpinTopic: vi.fn(async () => true),
       getTopicNode: vi.fn(async () => topic),
       getGraftRegistry: vi.fn(async () => []),
       graftTopics: vi.fn(async (request) => ({

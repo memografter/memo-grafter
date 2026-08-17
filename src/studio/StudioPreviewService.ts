@@ -4,6 +4,9 @@ import { GrafterPipeline } from "../retrieval/GrafterPipeline.js";
 import { RetrieverPipeline } from "../retrieval/RetrieverPipeline.js";
 import type { EmbedAdapter, FleetMemoryMode, LLMAdapter, MemoGrafterConfig, RetrievalResult } from "../core/types.js";
 import type { GraphStore } from "../store/index.js";
+import { composePinnedTopicContext } from "../prompts/pinnedTopicPrompt.js";
+import { countApproxTokens } from "../utils/text/tokenCount.js";
+import { buildFactRetrievalPrompt, formatFactBlock } from "../prompts/factRetrievalPrompt.js";
 
 export interface StudioPreviewRequest { sessionId: string; query: string; profile?: InvocationProfile; fleetMemoryMode?: FleetMemoryMode; sharedSessionId?: string }
 export type StudioPreviewResult = InvocationPlan & { planId: string; expiresAt: string };
@@ -95,11 +98,49 @@ export class PipelineStudioPreviewService implements StudioPreviewService {
     const limit = this.config.inject?.recallLimit ?? 6;
     const minSimilarity = this.config.inject?.recallMinSimilarity ?? 0.55;
     if (await this.store.getSessionNodeCount(sessionId) === 0) return this.empty("not-applicable", [sessionId], limit, minSimilarity);
+    const [pinnedTopics, memories] = await Promise.all([
+        this.store.getPinnedTopics(sessionId),
+        this.store.getMemoriesBySession(sessionId),
+    ]);
+    let recallError: unknown;
+    let result: RetrievalResult;
     try {
-      const result = await this.recall(query, sessionId, [sessionId], limit, minSimilarity);
-      if (result.facts.length === 0) return this.empty("no-match", [sessionId], limit, minSimilarity);
-      return this.fromRecall(result, [sessionId], limit, minSimilarity);
-    } catch (error: unknown) { return this.empty("failed", [sessionId], limit, minSimilarity, error); }
+      result = await this.recall(query, sessionId, [sessionId], limit, minSimilarity);
+    } catch (error: unknown) {
+      recallError = error;
+      result = { facts: [], nodes: [], systemPrompt: "", tokenCount: 0 };
+    }
+      const pinnedIds = new Set(pinnedTopics.map((topic) => topic.id));
+      const pinnedMemories = memories.filter((memory) => pinnedIds.has(memory.topicNodeId) && !memory.forgotten && !memory.decayed && memory.supersededBy == null);
+      const pinned = composePinnedTopicContext(pinnedTopics, pinnedMemories, this.config.inject?.tokenBudget ?? 4000);
+      const pinnedPrompt = pinned.systemPrompt;
+      const recalledFacts = result.facts.filter((memory) => !pinnedIds.has(memory.topicNodeId));
+      const recalledFactsByTopic = new Map<string, typeof recalledFacts>();
+      for (const fact of recalledFacts) recalledFactsByTopic.set(fact.topicNodeId, [...(recalledFactsByTopic.get(fact.topicNodeId) ?? []), fact]);
+      const recalledNodes = result.nodes.filter((node) => !pinnedIds.has(node.id));
+      const recalledPrompt = recalledFacts.length > 0
+        ? buildFactRetrievalPrompt(recalledNodes.map((node) => formatFactBlock(recalledFactsByTopic.get(node.id) ?? [], node)))
+        : "";
+      const content = [pinnedPrompt, recalledPrompt].filter(Boolean).join("\n\n");
+      if (!content) return this.empty("no-match", [sessionId], limit, minSimilarity);
+      return {
+        placement: "message",
+        retrieval: {
+          status: recallError ? "failed" : "matched", strategy: "recall",
+          topics: [...pinnedTopics, ...recalledNodes],
+          memories: [...pinnedMemories, ...recalledFacts], limit, minSimilarity, sessionIds: [sessionId],
+          ...(recallError ? { error: { message: recallError instanceof Error ? recallError.message : String(recallError), recoverable: true } } : {}),
+        },
+        memoryContext: {
+          content,
+          tokenCount: countApproxTokens(content),
+          ...(result.tokenBudget !== undefined ? { tokenBudget: result.tokenBudget } : {}),
+          components: [
+            ...(pinnedPrompt ? [{ kind: "pinned-topics" as const, content: pinnedPrompt, tokenCount: pinned.tokenCount }] : []),
+            ...(recalledPrompt ? [{ kind: "recalled-memory" as const, content: recalledPrompt, tokenCount: result.tokenCount }] : []),
+          ],
+        },
+      };
   }
 
   private async buildFleetContext(request: StudioPreviewRequest): Promise<PlannedMemoryContext> {

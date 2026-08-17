@@ -6,6 +6,7 @@ import type {
   MemoGrafterConfig,
   MemoryNode,
   Message,
+  PinnedContextResult,
   RetrievalResult,
   RetrieverConfig,
 } from "../../../src/core/types.js";
@@ -18,6 +19,8 @@ type AgentInternals = {
       getSessionNodeCount(sessionId: string): Promise<number>;
     };
     enqueueIncrementalIngest(messages: Message[], sessionId: string, startIndex: number): Promise<void>;
+    combinePinnedContext(sessionId: string, result: RetrievalResult, pinned?: PinnedContextResult): Promise<RetrievalResult>;
+    getPinnedContext(sessionId: string): Promise<PinnedContextResult>;
   };
   recall(query: string, options?: RetrieverConfig): Promise<RetrievalResult>;
 };
@@ -38,12 +41,16 @@ class FakeEmbedAdapter implements EmbedAdapter {
 }
 
 function createAgent(overrides: Partial<MemoGrafterConfig> = {}): MemoGrafterAgent {
-  return new MemoGrafterAgent({
+  const agent = new MemoGrafterAgent({
     db: { connectionString: "postgres://user:pass@localhost:5432/memografter_test" },
     llm: new CapturingLLMAdapter(),
     embedder: new FakeEmbedAdapter(),
     ...overrides,
   });
+  internals(agent).core.getPinnedContext = vi.fn(async () => ({
+    systemPrompt: "", nodes: [], memories: [], tokenCount: 0, tokenBudget: 4000, truncated: false,
+  }));
+  return agent;
 }
 
 function internals(agent: MemoGrafterAgent): AgentInternals {
@@ -188,6 +195,8 @@ describe("MemoGrafterAgent.invoke memory context", () => {
     privateAgent.core.store.getSessionNodeCount = vi.fn<AgentInternals["core"]["store"]["getSessionNodeCount"]>()
       .mockResolvedValue(2);
     privateAgent.recall = vi.fn<AgentInternals["recall"]>().mockResolvedValue(retrievalResult("Relevant memory"));
+    privateAgent.core.combinePinnedContext = vi.fn<AgentInternals["core"]["combinePinnedContext"]>()
+      .mockImplementation(async (_sessionId, result) => result);
 
     await agent.invoke("Earlier turn.");
     llm.calls.length = 0;

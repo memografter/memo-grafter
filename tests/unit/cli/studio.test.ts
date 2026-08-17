@@ -213,7 +213,7 @@ describe("memo-grafter studio", () => {
     expect(html).toContain('data-graft-action="done"');
     expect(html).toContain("No topics copied");
     expect(html).toContain("Graft completed with issues");
-    expect(html).toContain('fetchJson(url, { method: "POST" })');
+    expect(html).toContain('method: action === "pin" ? "PUT" : action === "unpin" ? "DELETE" : "POST"');
     expect(html).not.toContain("Restore topic");
     expect(html).not.toContain("Forget memory");
     expect(html).not.toContain("This lifecycle action cannot be undone in Studio.");

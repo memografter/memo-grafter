@@ -23,6 +23,8 @@ export interface TopicNode {
   agentId: string | null;
   suppressed?: boolean;
   suppressedAt?: Date | null;
+  pinned?: boolean;
+  pinnedAt?: Date | null;
   createdAt: Date;
 }
 
@@ -283,6 +285,16 @@ export interface RetrievalResult {
   systemPrompt: string;
   tokenCount: number;
   tokenBudget?: number;
+  /** Topics included because they are pinned in the requested session. */
+  pinnedNodes?: TopicNode[];
+  /** True when pinned context was compacted to fit its configured budget. */
+  pinnedContextTruncated?: boolean;
+  /** Budget reserved separately for pinned-topic context. */
+  pinnedTokenBudget?: number;
+}
+
+export interface PinnedContextResult extends InjectionResult {
+  truncated: boolean;
 }
 
 export interface AbsorbFromAgentOptions {
@@ -403,6 +415,8 @@ export interface MemoGrafterConfig {
   llm: LLMAdapter;
   embedder: EmbedAdapter;
   systemPrompt?: string;
+  /** Reuse an existing session. Omit to create a new random session ID. */
+  sessionId?: string;
   drift?: MemoGrafterDriftConfig;
   graph?: MemoGrafterGraphConfig;
   inject?: MemoGrafterInjectConfig;
