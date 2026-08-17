@@ -212,3 +212,17 @@ All notable changes to this project will be documented here.
 ### Internal
 
 - Added root-level scripts for running `migrate` and `doctor` commands during repository development.
+
+## [0.5.0] - 2026-08-17
+
+### Added
+
+* Added `analyze` and `context` APIs for integrating MemoGrafter's memory capabilities into existing chatbot and agent systems.
+* Added persistent topic pinning to keep selected session topics available as prioritized invocation context.
+* Added grafting workflows to MemoGrafter Studio for selecting and transferring relevant memory through the Studio UI.
+* Added Invoke Preview to Studio for inspecting the context and request structure prepared for LLM invocation.
+
+### Changed
+
+* Expanded MemoGrafter Studio from memory inspection toward interactive memory management and invocation debugging.
+* Improved MemoGrafter's integration model so existing chatbot applications can use its memory and context capabilities without depending solely on the built-in agent flow.
