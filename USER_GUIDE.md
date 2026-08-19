@@ -219,6 +219,38 @@ npx tsx --env-file=.env src/index.ts
 
 ## Core Concepts
 
+### Integrating An Existing Chatbot Or Agent
+
+Use the core `MemoGrafter` API when your application already owns the model call. Retrieve memory before generation, then analyze the completed exchange afterward:
+
+```ts
+const context = await memo.context({
+  sessionId: "support-42",
+  query: userMessage,
+  limit: 6,
+  minSimilarity: 0.55,
+  tokenBudget: 900,
+});
+
+const assistantMessage = await yourChatRuntime.generate({
+  systemPrompt: context.systemPrompt,
+  userMessage,
+});
+
+await memo.analyze({
+  sessionId: "support-42",
+  userMessage,
+  assistantMessage,
+  tags: ["support"],
+});
+```
+
+`context()` embeds the query and runs the current graph retrieval path. It returns `facts`, their parent topic `nodes`, a ready-to-inject `systemPrompt`, and token metadata. It always reads fresh graph state: even if recall caching is configured, this method does not read or populate Redis. Retrieval defaults are `limit: 10`, `minSimilarity: 0.6`, and `tokenBudget: 1200`; tag, scope, session, and scoring options are the same as targeted recall. Persistent pinned topics for the requested session are prepended in pin order, use the separately reserved `inject.tokenBudget`, and are described by `pinnedNodes`, `pinnedContextTruncated`, and `pinnedTokenBudget` in the result.
+
+`analyze()` accepts one completed, non-empty user-assistant exchange, appends it after the session's durable ingest cursor, and runs the normal drift detection, extraction, embedding, and graph persistence pipeline. Calls are serialized per session within a process so concurrent direct appends do not claim the same indexes. Optional tags are applied to the topic and memory rows created from the exchange. Call it only after a response completes; do not also ingest the same exchange through another API.
+
+Neither method performs your application's chat completion. `context()` requires an embedder; `analyze()` uses both the configured embedder and extraction LLM. Without queue mode, `analyze()` resolves to the newly created topic nodes. With queue mode, it resolves to `[]` once the append job is accepted, and the new graph state becomes visible only after the worker completes.
+
 ### Messages
 
 A message is one user or assistant turn:
