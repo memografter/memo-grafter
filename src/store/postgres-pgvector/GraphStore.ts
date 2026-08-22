@@ -14,6 +14,9 @@ import {
 import { cosineSimilarity } from "../../utils/drift/cosineSimilarity.js";
 import { normalizeTags } from "../../utils/tags.js";
 import { parseVector, toVectorLiteral } from "../../utils/vector/vectorLiteral.js";
+import type { AcceptIngestionRequest, IngestionRun, IngestionTransition, PreparedIngestion, ReconciliationIssue } from "../../ingestion/types.js";
+import { MemoGrafterError } from "../../diagnostics.js";
+import { assertIngestionTransition } from "../../ingestion/stateMachine.js";
 
 interface TopicNodeRow {
   id: string;
@@ -85,6 +88,15 @@ interface SessionIngestStateRow {
   session_id: string;
   last_ingested_message_index: number;
   updated_at: Date;
+}
+
+interface IngestionRunRow {
+  id: string; session_id: string; kind: IngestionRun["kind"]; start_index: number; end_index: number;
+  idempotency_key: string | null; status: IngestionRun["status"]; attempt_count: number;
+  queued_at: Date | null; started_at: Date | null; completed_at: Date | null; failed_at: Date | null;
+  lease_expires_at: Date | null; heartbeat_at: Date | null; last_error_code: IngestionRun["lastErrorCode"] | null;
+  last_error_stage: IngestionRun["lastErrorStage"] | null; last_error_safe_message: string | null;
+  retryable: boolean | null; worker_id: string | null; created_at: Date; updated_at: Date;
 }
 
 interface EdgeRow {
@@ -377,6 +389,20 @@ export class PostgresGraphStore implements GraphStore {
     `;
 
     await this.sql`
+      CREATE TABLE IF NOT EXISTS mg_ingestion_runs (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(), session_id TEXT NOT NULL, kind TEXT NOT NULL,
+        start_index INT NOT NULL CHECK (start_index >= 0), end_index INT NOT NULL CHECK (end_index >= start_index),
+        idempotency_key TEXT, status TEXT NOT NULL CHECK (status IN ('accepted','queued','running','retry_pending','completed','completed_with_warnings','failed','cancelled','abandoned')),
+        attempt_count INT NOT NULL DEFAULT 0, queued_at TIMESTAMPTZ, started_at TIMESTAMPTZ,
+        completed_at TIMESTAMPTZ, failed_at TIMESTAMPTZ, lease_expires_at TIMESTAMPTZ,
+        heartbeat_at TIMESTAMPTZ, last_error_code TEXT, last_error_stage TEXT,
+        last_error_safe_message TEXT, retryable BOOLEAN, worker_id TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (session_id, start_index, end_index, kind)
+      )
+    `;
+
+    await this.sql`
       CREATE TABLE IF NOT EXISTS mg_graft_registry (
         id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         session_id        TEXT NOT NULL,
@@ -456,6 +482,119 @@ export class PostgresGraphStore implements GraphStore {
         startIndex,
         endIndex: startIndex + messages.length - 1,
       };
+    });
+  }
+
+  async acceptIngestionRun(request: AcceptIngestionRequest): Promise<IngestionRun> {
+    if (request.messages.length === 0) throw new MemoGrafterError("Cannot accept an empty ingestion run.", { code: "INPUT_INVALID", operation: "analyze", context: { field: "messages" } });
+    return this.sql.begin(async (transaction) => {
+      await transaction`SELECT pg_advisory_xact_lock(hashtext(${`memo-grafter-session:${request.sessionId}`}))`;
+      if (request.idempotencyKey) {
+        const existing = await transaction<IngestionRunRow[]>`SELECT * FROM mg_ingestion_runs WHERE session_id = ${request.sessionId} AND idempotency_key = ${request.idempotencyKey} LIMIT 1`;
+        if (existing[0]) {
+          const buffered = await transaction<MessageRow[]>`SELECT * FROM mg_message_buffer WHERE session_id = ${request.sessionId} AND message_index BETWEEN ${existing[0].start_index} AND ${existing[0].end_index} ORDER BY message_index`;
+          const identical = buffered.length === request.messages.length && buffered.every((row, index) => row.role === request.messages[index]?.role && row.content === request.messages[index]?.content);
+          if (!identical || existing[0].kind !== request.kind) throw this.ingestionInvariant("An idempotency key was reused with different ingestion input.", request.sessionId, existing[0].id);
+          return this.rowToIngestionRun(existing[0]);
+        }
+      }
+      const rangeRows = await transaction<{ start_index: number }[]>`SELECT COALESCE(MAX(message_index), -1)::int + 1 AS start_index FROM mg_message_buffer WHERE session_id = ${request.sessionId}`;
+      const startIndex = rangeRows[0]?.start_index ?? 0;
+      for (const [offset, message] of request.messages.entries()) {
+        await transaction`INSERT INTO mg_message_buffer (session_id, message_index, role, content) VALUES (${request.sessionId}, ${startIndex + offset}, ${message.role}, ${message.content})`;
+      }
+      const rows = await transaction<IngestionRunRow[]>`
+        INSERT INTO mg_ingestion_runs (session_id, kind, start_index, end_index, idempotency_key, status)
+        VALUES (${request.sessionId}, ${request.kind}, ${startIndex}, ${startIndex + request.messages.length - 1}, ${request.idempotencyKey ?? null}, 'accepted') RETURNING *`;
+      if (!rows[0]) throw this.ingestionInvariant("Accepted ingestion run was not returned.", request.sessionId);
+      return this.rowToIngestionRun(rows[0]);
+    });
+  }
+
+  async getIngestionRun(runId: string): Promise<IngestionRun | null> {
+    const rows = await this.sql<IngestionRunRow[]>`SELECT * FROM mg_ingestion_runs WHERE id = ${runId} LIMIT 1`;
+    return rows[0] ? this.rowToIngestionRun(rows[0]) : null;
+  }
+
+  async listIngestionRuns(sessionId?: string, statuses?: IngestionRun["status"][]): Promise<IngestionRun[]> {
+    const rows = await this.sql<IngestionRunRow[]>`SELECT * FROM mg_ingestion_runs WHERE TRUE
+      ${sessionId === undefined ? this.sql`` : this.sql`AND session_id = ${sessionId}`}
+      ${!statuses?.length ? this.sql`` : this.sql`AND status = ANY(${statuses})`}
+      ORDER BY created_at`;
+    return rows.map((row) => this.rowToIngestionRun(row));
+  }
+
+  async countActiveIngestionRuns(): Promise<number> {
+    const rows = await this.sql<{ count: number }[]>`SELECT COUNT(*)::int AS count FROM mg_ingestion_runs WHERE status IN ('accepted','queued','running','retry_pending')`;
+    return rows[0]?.count ?? 0;
+  }
+
+  async inspectIngestionConsistency(sessionId?: string): Promise<ReconciliationIssue[]> {
+    const issues: ReconciliationIssue[] = [];
+    const runs = await this.listIngestionRuns(sessionId);
+    const now = Date.now();
+    for (const run of runs) {
+      if (run.status === "accepted") issues.push({ code: "accepted-not-started", severity: "warning", sessionId: run.sessionId, runId: run.id, message: "Accepted ingestion has not started.", repairable: true });
+      if (run.status === "running" && run.leaseExpiresAt && run.leaseExpiresAt.getTime() < now) issues.push({ code: "expired-worker-lease", severity: "error", sessionId: run.sessionId, runId: run.id, message: "Running ingestion worker lease expired.", repairable: true });
+      if ((run.status === "failed" && run.retryable) || run.status === "retry_pending") issues.push({ code: "retryable-failure", severity: "warning", sessionId: run.sessionId, runId: run.id, message: "Ingestion can be retried safely.", repairable: true });
+    }
+    const cursorRows = await this.sql<{ session_id: string; cursor: number; max_index: number }[]>`SELECT b.session_id, COALESCE(s.last_ingested_message_index,-1)::int AS cursor, MAX(b.message_index)::int AS max_index FROM mg_message_buffer b LEFT JOIN mg_session_ingest_state s ON s.session_id=b.session_id WHERE TRUE ${sessionId === undefined ? this.sql`` : this.sql`AND b.session_id=${sessionId}`} GROUP BY b.session_id,s.last_ingested_message_index`;
+    for (const row of cursorRows) {
+      if (row.cursor < row.max_index && !runs.some((run) => run.sessionId === row.session_id && ["accepted","queued","running","retry_pending"].includes(run.status))) issues.push({ code: "cursor-behind-buffer", severity: "warning", sessionId: row.session_id, message: "Cursor is behind durable messages without a pending run.", repairable: false });
+      if (row.cursor > row.max_index) issues.push({ code: "cursor-ahead-of-buffer", severity: "error", sessionId: row.session_id, message: "Cursor is ahead of the durable message buffer.", repairable: false });
+    }
+    const cursorBySession = new Map(cursorRows.map((row) => [row.session_id, row.cursor]));
+    for (const run of runs) if (["completed", "completed_with_warnings"].includes(run.status) && (cursorBySession.get(run.sessionId) ?? -1) < run.endIndex) issues.push({ code: "completed-cursor-behind", severity: "error", sessionId: run.sessionId, runId: run.id, message: "Completed run is not covered by the ingestion cursor.", repairable: false });
+    const orphanTopics = await this.sql<{ session_id: string }[]>`SELECT DISTINCT n.session_id FROM mg_topic_nodes n LEFT JOIN mg_segments s ON s.id=n.segment_id WHERE s.id IS NULL ${sessionId === undefined ? this.sql`` : this.sql`AND n.session_id=${sessionId}`}`;
+    for (const row of orphanTopics) issues.push({ code: "topic-without-segment", severity: "error", sessionId: row.session_id, message: "Topic exists without its segment.", repairable: false });
+    const orphanSegments = await this.sql<{ session_id: string }[]>`SELECT DISTINCT s.session_id FROM mg_segments s LEFT JOIN mg_topic_nodes n ON n.segment_id=s.id WHERE n.id IS NULL ${sessionId === undefined ? this.sql`` : this.sql`AND s.session_id=${sessionId}`}`;
+    for (const row of orphanSegments) issues.push({ code: "segment-without-topic", severity: "error", sessionId: row.session_id, message: "Segment exists without its required topic.", repairable: false });
+    const duplicates = await this.sql<{ session_id: string }[]>`SELECT session_id FROM mg_ingestion_runs WHERE TRUE ${sessionId === undefined ? this.sql`` : this.sql`AND session_id=${sessionId}`} GROUP BY session_id,start_index,end_index,kind HAVING COUNT(*) > 1`;
+    for (const row of duplicates) issues.push({ code: "duplicate-range", severity: "error", sessionId: row.session_id, message: "Duplicate ingestion processing range exists.", repairable: false });
+    return issues;
+  }
+
+  async transitionIngestionRun(transition: IngestionTransition): Promise<IngestionRun> {
+    assertIngestionTransition(transition.from, transition.to);
+    const error = transition.error;
+    const rows = await this.sql<IngestionRunRow[]>`
+      UPDATE mg_ingestion_runs SET status = ${transition.to}, updated_at = NOW(),
+        queued_at = CASE WHEN ${transition.to} = 'queued' THEN NOW() ELSE queued_at END,
+        started_at = CASE WHEN ${transition.to} = 'running' THEN NOW() ELSE started_at END,
+        completed_at = CASE WHEN ${transition.to} IN ('completed','completed_with_warnings') THEN NOW() ELSE completed_at END,
+        failed_at = CASE WHEN ${transition.to} IN ('failed','abandoned') THEN NOW() ELSE failed_at END,
+        attempt_count = attempt_count + CASE WHEN ${transition.to} = 'running' THEN 1 ELSE 0 END,
+        worker_id = COALESCE(${transition.workerId ?? null}, worker_id),
+        lease_expires_at = ${transition.leaseExpiresAt ?? null}, heartbeat_at = CASE WHEN ${transition.to} = 'running' THEN NOW() ELSE heartbeat_at END,
+        last_error_code = ${error?.code ?? null}, last_error_stage = ${error?.stage ?? null},
+        last_error_safe_message = ${error?.message.slice(0, 500) ?? null}, retryable = ${error?.retryable ?? null}
+      WHERE id = ${transition.runId} AND status = ANY(${transition.from}) RETURNING *`;
+    if (!rows[0]) throw this.ingestionInvariant(`Illegal ingestion transition to ${transition.to}.`, undefined, transition.runId);
+    return this.rowToIngestionRun(rows[0]);
+  }
+
+  async renewIngestionRunLease(runId: string, workerId: string, leaseExpiresAt: Date): Promise<void> {
+    const rows = await this.sql<{ id: string }[]>`UPDATE mg_ingestion_runs SET heartbeat_at=NOW(),lease_expires_at=${leaseExpiresAt},updated_at=NOW() WHERE id=${runId} AND status='running' AND worker_id=${workerId} RETURNING id`;
+    if (!rows[0]) throw this.ingestionInvariant("Running ingestion lease could not be renewed.", undefined, runId);
+  }
+
+  async commitPreparedIngestion(prepared: PreparedIngestion): Promise<{ nodes: TopicNode[]; run: IngestionRun }> {
+    return this.sql.begin(async (transaction) => {
+      await transaction`SELECT pg_advisory_xact_lock(hashtext(${`memo-grafter-session:${prepared.sessionId}`}))`;
+      const runRows = await transaction<IngestionRunRow[]>`SELECT * FROM mg_ingestion_runs WHERE id = ${prepared.runId} FOR UPDATE`;
+      const run = runRows[0];
+      if (!run || run.status !== "running" || run.session_id !== prepared.sessionId || run.start_index !== prepared.startIndex || run.end_index !== prepared.endIndex) throw this.ingestionInvariant("Ingestion run does not match the prepared commit.", prepared.sessionId, prepared.runId);
+      const cursorRows = await transaction<{ last_ingested_message_index: number }[]>`SELECT last_ingested_message_index FROM mg_session_ingest_state WHERE session_id = ${prepared.sessionId} FOR UPDATE`;
+      const cursor = cursorRows[0]?.last_ingested_message_index ?? -1;
+      if (cursor !== prepared.expectedCursor) throw this.ingestionInvariant(`Expected cursor ${prepared.expectedCursor}, found ${cursor}.`, prepared.sessionId, prepared.runId);
+      for (const segment of prepared.segments) await transaction`INSERT INTO mg_segments (id,session_id,start_index,end_index,topic_order,drift_score,created_at) VALUES (${segment.id},${segment.sessionId},${segment.startIndex},${segment.endIndex},${segment.topicOrder},${segment.driftScore},${segment.createdAt}) ON CONFLICT (session_id,start_index,end_index) DO UPDATE SET topic_order=EXCLUDED.topic_order,drift_score=EXCLUDED.drift_score`;
+      for (const node of prepared.nodes) await transaction`INSERT INTO mg_topic_nodes (id,session_id,segment_id,label,summary,embedding,tags,source,message_range,topic_order,drift_score,agent_color,fleet_id,agent_id,created_at) VALUES (${node.id},${node.sessionId},${node.segmentId},${node.label},${node.summary},${toVectorLiteral(node.embedding)}::vector,${transaction.array(normalizeTags(node.tags))}::text[],${node.source ?? null},${node.messageRange},${node.topicOrder},${node.driftScore},${node.agentColor},${node.fleetId},${node.agentId},${node.createdAt}) ON CONFLICT (segment_id) DO UPDATE SET label=EXCLUDED.label,summary=EXCLUDED.summary,embedding=EXCLUDED.embedding,tags=EXCLUDED.tags,source=EXCLUDED.source,message_range=EXCLUDED.message_range,topic_order=EXCLUDED.topic_order,drift_score=EXCLUDED.drift_score`;
+      for (const memory of prepared.memories) await transaction`INSERT INTO mg_memory_nodes (id,segment_id,topic_node_id,agent_id,session_id,memory_type,source_type,subject,predicate,value,confidence,embedding,tags,source,source_url,source_title,superseded_by,decayed,forgotten,has_conflict,agent_color,fleet_id) VALUES (${memory.id},${memory.segmentId},${memory.topicNodeId},${memory.agentId},${memory.sessionId},${memory.memoryType},${memory.sourceType},${memory.subject},${memory.predicate},${memory.value},${memory.confidence},${toVectorLiteral(memory.embedding)}::vector,${transaction.array(normalizeTags(memory.tags))}::text[],${memory.source ?? null},${memory.sourceUrl},${memory.sourceTitle},${memory.supersededBy},${memory.decayed},${memory.forgotten ?? false},${memory.hasConflict ?? false},${memory.agentColor},${memory.fleetId}) ON CONFLICT (id) DO NOTHING`;
+      for (const edge of prepared.requiredEdges) await transaction`INSERT INTO mg_topic_edges (src_id,dst_id,weight,type) VALUES (${edge.srcId},${edge.dstId},${edge.weight},${edge.type}) ON CONFLICT (src_id,dst_id) DO UPDATE SET weight=EXCLUDED.weight,type=EXCLUDED.type`;
+      await transaction`INSERT INTO mg_session_ingest_state (session_id,last_ingested_message_index,updated_at) VALUES (${prepared.sessionId},${prepared.endIndex},NOW()) ON CONFLICT (session_id) DO UPDATE SET last_ingested_message_index=EXCLUDED.last_ingested_message_index,updated_at=NOW()`;
+      const completed = await transaction<IngestionRunRow[]>`UPDATE mg_ingestion_runs SET status='completed',completed_at=NOW(),lease_expires_at=NULL,updated_at=NOW() WHERE id=${prepared.runId} AND status='running' RETURNING *`;
+      if (!completed[0]) throw this.ingestionInvariant("Ingestion run could not be completed.", prepared.sessionId, prepared.runId);
+      return { nodes: prepared.nodes, run: this.rowToIngestionRun(completed[0]) };
     });
   }
 
@@ -2233,6 +2372,11 @@ export class PostgresGraphStore implements GraphStore {
       ON mg_session_ingest_state(updated_at)
     `;
 
+    await this.sql`CREATE UNIQUE INDEX IF NOT EXISTS mg_ingestion_runs_idempotency_idx ON mg_ingestion_runs(session_id,idempotency_key) WHERE idempotency_key IS NOT NULL`;
+    await this.sql`CREATE INDEX IF NOT EXISTS mg_ingestion_runs_session_status_idx ON mg_ingestion_runs(session_id,status)`;
+    await this.sql`CREATE INDEX IF NOT EXISTS mg_ingestion_runs_pending_idx ON mg_ingestion_runs(status,retryable,updated_at)`;
+    await this.sql`CREATE INDEX IF NOT EXISTS mg_ingestion_runs_lease_idx ON mg_ingestion_runs(lease_expires_at) WHERE status='running'`;
+
     await this.sql`
       CREATE INDEX IF NOT EXISTS idx_graft_registry_session
       ON mg_graft_registry(session_id)
@@ -2443,6 +2587,21 @@ export class PostgresGraphStore implements GraphStore {
       lastIngestedMessageIndex: row.last_ingested_message_index,
       updatedAt: row.updated_at,
     };
+  }
+
+  private rowToIngestionRun(row: IngestionRunRow): IngestionRun {
+    return { id: row.id, sessionId: row.session_id, kind: row.kind, startIndex: row.start_index, endIndex: row.end_index,
+      ...(row.idempotency_key ? { idempotencyKey: row.idempotency_key } : {}), status: row.status, attemptCount: row.attempt_count,
+      ...(row.queued_at ? { queuedAt: row.queued_at } : {}), ...(row.started_at ? { startedAt: row.started_at } : {}),
+      ...(row.completed_at ? { completedAt: row.completed_at } : {}), ...(row.failed_at ? { failedAt: row.failed_at } : {}),
+      ...(row.lease_expires_at ? { leaseExpiresAt: row.lease_expires_at } : {}), ...(row.heartbeat_at ? { heartbeatAt: row.heartbeat_at } : {}),
+      ...(row.last_error_code ? { lastErrorCode: row.last_error_code } : {}), ...(row.last_error_stage ? { lastErrorStage: row.last_error_stage } : {}),
+      ...(row.last_error_safe_message ? { lastErrorSafeMessage: row.last_error_safe_message } : {}), ...(row.retryable !== null ? { retryable: row.retryable } : {}),
+      ...(row.worker_id ? { workerId: row.worker_id } : {}), createdAt: row.created_at, updatedAt: row.updated_at };
+  }
+
+  private ingestionInvariant(message: string, sessionId?: string, runId?: string): MemoGrafterError {
+    return new MemoGrafterError(message, { code: "INGESTION_INVARIANT_VIOLATION", operation: "ingest", retryable: false, context: { ...(sessionId ? { sessionId } : {}), ...(runId ? { jobId: runId } : {}) } });
   }
 
   private rowToGraftRegistryEntry(row: GraftRegistryRow | undefined): GraftRegistryEntry {

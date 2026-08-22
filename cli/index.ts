@@ -3,6 +3,7 @@ import { runInit } from "./commands/init.js";
 import { runMigrate } from "./commands/migrate.js";
 import { runStudio } from "./commands/studio.js";
 import { runDoctor } from "./commands/doctor.js";
+import { runReconcile } from "./commands/reconcile.js";
 import { isHandledDatabaseSetupError } from "./utils/database-errors.js";
 import { logger } from "./utils/logger.js";
 
@@ -21,6 +22,9 @@ try {
     const db = readDoctorArguments(args);
     const report = await runDoctor({ ...(db ? { db } : {}) });
     logger.info(report.output);
+    process.exitCode = report.exitCode;
+  } else if (command === "reconcile") {
+    const report = await runReconcile(readReconcileArguments(args));
     process.exitCode = report.exitCode;
   } else {
     printHelp();
@@ -66,6 +70,21 @@ function readDoctorArguments(args: string[]): string | undefined {
   return db;
 }
 
+function readReconcileArguments(args: string[]): { db?: string; sessionId?: string; repair?: boolean; actions?: string[]; json?: boolean } {
+  const result: { db?: string; sessionId?: string; repair?: boolean; actions?: string[]; json?: boolean } = {};
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (arg === "--repair") result.repair = true;
+    else if (arg === "--json") result.json = true;
+    else if (["--db", "--session", "--action"].includes(arg)) {
+      const value = args[++index]; if (!value || value.startsWith("--")) throw new CliUsageError(`${arg} requires a value.`);
+      if (arg === "--db") result.db = value; else if (arg === "--session") result.sessionId = value; else result.actions = [...(result.actions ?? []), value];
+    } else throw new CliUsageError(`Unknown reconcile option: ${arg}`);
+  }
+  if (result.actions?.length && !result.repair) throw new CliUsageError("--action requires --repair.");
+  return result;
+}
+
 function printHelp(): void {
   logger.info(`MemoGrafter CLI
 
@@ -74,6 +93,8 @@ Usage:
   memo-grafter migrate [--db <connection-string>]
   memo-grafter doctor [--db <connection-string>]
   memo-grafter studio [--db <connection-string>]
+  memo-grafter reconcile [--session <id>] [--json]
+  memo-grafter reconcile --repair --action <action>
 
 Recommended setup:
   memo-grafter init

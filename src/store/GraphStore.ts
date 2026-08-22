@@ -14,6 +14,7 @@ import type {
   TopicSegment,
 } from "../core/types.js";
 import type { MigrationReport } from "../schema/index.js";
+import type { AcceptIngestionRequest, IngestionRun, IngestionTransition, PreparedIngestion, ReconciliationIssue } from "../ingestion/types.js";
 
 export interface FleetAgentRecord {
   id: string;
@@ -31,6 +32,14 @@ export interface GraphStore {
   saveMessagesAt(sessionId: string, startIndex: number, messages: Message[]): Promise<void>;
   /** Atomically reserve indexes and append messages. Custom stores may omit this for legacy behavior. */
   appendMessages?(sessionId: string, messages: Message[]): Promise<{ startIndex: number; endIndex: number }>;
+  acceptIngestionRun?(request: AcceptIngestionRequest): Promise<IngestionRun>;
+  getIngestionRun?(runId: string): Promise<IngestionRun | null>;
+  listIngestionRuns?(sessionId?: string, statuses?: IngestionRun["status"][]): Promise<IngestionRun[]>;
+  transitionIngestionRun?(transition: IngestionTransition): Promise<IngestionRun>;
+  renewIngestionRunLease?(runId: string, workerId: string, leaseExpiresAt: Date): Promise<void>;
+  commitPreparedIngestion?(prepared: PreparedIngestion): Promise<{ nodes: TopicNode[]; run: IngestionRun }>;
+  inspectIngestionConsistency?(sessionId?: string): Promise<ReconciliationIssue[]>;
+  countActiveIngestionRuns?(): Promise<number>;
   getMessagesBySession(sessionId: string, startIndex?: number, endIndex?: number): Promise<Message[]>;
   getRecentMessagesBefore(sessionId: string, beforeIndex: number, limit: number): Promise<Message[]>;
   getSessionIngestState(sessionId: string): Promise<SessionIngestState | null>;

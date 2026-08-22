@@ -1,7 +1,7 @@
 import { mgExtension, mgIndex, mgTable } from "./builders.js";
 
 export const memoGrafterMigrationTableName = "mg_migrations";
-export const memoGrafterCurrentMigrationVersion = 2;
+export const memoGrafterCurrentMigrationVersion = 3;
 
 export const memoGrafterExtensions = [
   mgExtension({
@@ -160,6 +160,24 @@ export const memoGrafterTables = [
     ],
   }),
   mgTable({
+    name: "mg_ingestion_runs",
+    description: "Durable lifecycle and retry state for accepted ingestion ranges.",
+    columns: [
+      { name: "id", type: "uuid", primaryKey: true, default: "gen_random_uuid()" },
+      { name: "session_id", type: "text" }, { name: "kind", type: "text" },
+      { name: "start_index", type: "int" }, { name: "end_index", type: "int" },
+      { name: "idempotency_key", type: "text", nullable: true }, { name: "status", type: "text" },
+      { name: "attempt_count", type: "int", default: "0" }, { name: "queued_at", type: "timestamptz", nullable: true },
+      { name: "started_at", type: "timestamptz", nullable: true }, { name: "completed_at", type: "timestamptz", nullable: true },
+      { name: "failed_at", type: "timestamptz", nullable: true }, { name: "lease_expires_at", type: "timestamptz", nullable: true },
+      { name: "heartbeat_at", type: "timestamptz", nullable: true }, { name: "last_error_code", type: "text", nullable: true },
+      { name: "last_error_stage", type: "text", nullable: true }, { name: "last_error_safe_message", type: "text", nullable: true },
+      { name: "retryable", type: "boolean", nullable: true }, { name: "worker_id", type: "text", nullable: true },
+      { name: "created_at", type: "timestamptz", default: "now()" }, { name: "updated_at", type: "timestamptz", default: "now()" },
+    ],
+    constraints: ["CHECK (start_index >= 0)", "CHECK (end_index >= start_index)", "UNIQUE (session_id, start_index, end_index, kind)"],
+  }),
+  mgTable({
     name: "mg_graft_registry",
     description: "Tracks copied/grafted topic node origins.",
     columns: [
@@ -184,6 +202,10 @@ export const memoGrafterIndexes = [
   mgIndex({ name: "mg_fleet_agents_fleet_idx", table: "mg_fleet_agents", description: "Fleet agent lookup by color." }),
   mgIndex({ name: "mg_sessions_label_lower_idx", table: "mg_sessions", description: "Case-insensitive session label lookup." }),
   mgIndex({ name: "mg_session_ingest_state_updated_idx", table: "mg_session_ingest_state", description: "Ingest state freshness lookup." }),
+  mgIndex({ name: "mg_ingestion_runs_session_status_idx", table: "mg_ingestion_runs", description: "Ingestion status lookup by session." }),
+  mgIndex({ name: "mg_ingestion_runs_idempotency_idx", table: "mg_ingestion_runs", description: "Caller idempotency key uniqueness by session." }),
+  mgIndex({ name: "mg_ingestion_runs_pending_idx", table: "mg_ingestion_runs", description: "Pending and retryable ingestion lookup." }),
+  mgIndex({ name: "mg_ingestion_runs_lease_idx", table: "mg_ingestion_runs", description: "Expired worker lease lookup." }),
   mgIndex({ name: "idx_graft_registry_session", table: "mg_graft_registry", description: "Graft registry lookup by session." }),
   mgIndex({ name: "idx_graft_registry_node_unique", table: "mg_graft_registry", description: "Unique graft registry node ownership." }),
   mgIndex({ name: "idx_graft_registry_source_target_unique", table: "mg_graft_registry", description: "Prevents duplicate source-topic grafts into a target session." }),

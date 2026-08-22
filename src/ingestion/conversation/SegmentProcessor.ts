@@ -49,6 +49,24 @@ export class SegmentProcessor {
     return persisted.node;
   }
 
+  async prepare(
+    segment: DriftSegment, messages: Message[], sessionId: string,
+    options: IngestPipelineOptions = {}, messageOffset = 0, memoriesRequired = true,
+  ): Promise<{ segment: TopicSegment; node: TopicNode; memories: MemoryNodeInsert[]; warnings: import("../../diagnostics.js").MemoGrafterWarning[] }> {
+    const candidateSegment = this.createSegment(segment, sessionId);
+    const tags = normalizeTags(options.tags);
+    const prepared = await this.prepareTopic(candidateSegment, messages, tags, options, messageOffset);
+    try {
+      const memories = await this.prepareMemories(prepared.extracted.memories, candidateSegment, prepared.node, options);
+      return { segment: candidateSegment, node: prepared.node, memories, warnings: [] };
+    } catch (cause) {
+      if (memoriesRequired) throw cause;
+      const warning = { code: "BEST_EFFORT_OPERATION_FAILED" as const, operation: "ingest" as const, stage: "embedding" as const, context: { sessionId }, cause };
+      emitWarning(this.config.diagnostics, warning);
+      return { segment: candidateSegment, node: prepared.node, memories: [], warnings: [warning] };
+    }
+  }
+
   private createSegment(segment: DriftSegment, sessionId: string): TopicSegment {
     return {
       id: randomUUID(),
@@ -128,39 +146,26 @@ export class SegmentProcessor {
     if (memories.length === 0) return;
 
     try {
-      const nodes: MemoryNodeInsert[] = [];
-
-      for (const memory of memories) {
-        const embedding = validateEmbedding(await this.embedder.embed(formatMemoryEmbeddingText(memory)), this.embedder.dimensions);
-        nodes.push({
-          id: randomUUID(),
-          segmentId: segment.id,
-          topicNodeId: topicNode.id,
-          sessionId: segment.sessionId,
-          agentId: topicNode.agentId,
-          agentColor: topicNode.agentColor,
-          fleetId: topicNode.fleetId,
-          memoryType: memory.memoryType,
-          sourceType: options.sourceType ?? "conversation",
-          subject: memory.subject,
-          predicate: memory.predicate,
-          value: memory.value,
-          confidence: memory.confidence,
-          embedding,
-          tags: topicNode.tags ?? [],
-          ...(options.source ? { source: options.source } : {}),
-          sourceUrl: null,
-          sourceTitle: null,
-          supersededBy: null,
-          decayed: false,
-        });
-      }
-
+      const nodes = await this.prepareMemories(memories, segment, topicNode, options);
       await this.store.insertMemories(nodes);
       await this.store.buildMemoryEdges(topicNode.id, segment.sessionId, this.config.semanticThreshold);
     } catch (error) {
       emitWarning(this.config.diagnostics, { code: "BEST_EFFORT_OPERATION_FAILED", operation: "analyze", stage: "graph-processing", context: { sessionId: segment.sessionId, messageRange: [segment.startIndex, segment.endIndex] }, cause: error });
       console.warn("SegmentProcessor memory processing warning:", error);
     }
+  }
+
+  private async prepareMemories(memories: ExtractedMemory[], segment: TopicSegment, topicNode: TopicNode, options: IngestPipelineOptions): Promise<MemoryNodeInsert[]> {
+    const nodes: MemoryNodeInsert[] = [];
+    for (const memory of memories) {
+      const embedding = validateEmbedding(await this.embedder.embed(formatMemoryEmbeddingText(memory)), this.embedder.dimensions);
+      nodes.push({ id: randomUUID(), segmentId: segment.id, topicNodeId: topicNode.id, sessionId: segment.sessionId,
+        agentId: topicNode.agentId, agentColor: topicNode.agentColor, fleetId: topicNode.fleetId,
+        memoryType: memory.memoryType, sourceType: options.sourceType ?? "conversation", subject: memory.subject,
+        predicate: memory.predicate, value: memory.value, confidence: memory.confidence, embedding,
+        tags: topicNode.tags ?? [], ...(options.source ? { source: options.source } : {}), sourceUrl: null,
+        sourceTitle: null, supersededBy: null, decayed: false });
+    }
+    return nodes;
   }
 }

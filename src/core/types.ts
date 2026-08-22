@@ -384,7 +384,7 @@ export interface MemoGrafterDatabaseConfig {
 
 export interface QueueJobTelemetryEvent {
   jobId: string;
-  kind: "messages" | "append" | "text";
+  kind: "messages" | "append" | "text" | "run";
   messageCount: number;
   /** UTF-8 byte length of the serialized BullMQ job data. */
   payloadBytes?: number;
@@ -398,6 +398,14 @@ export interface MemoGrafterQueueTelemetry {
   onJobCompleted?: (event: QueueJobTelemetryEvent) => void;
   /** Optional observation hook for jobs whose final state is failed. */
   onJobFailed?: (event: QueueJobTelemetryEvent) => void;
+  onAccepted?: (event: import("../ingestion/types.js").IngestionEvent) => void;
+  onQueued?: (event: import("../ingestion/types.js").IngestionEvent) => void;
+  onStarted?: (event: import("../ingestion/types.js").IngestionEvent) => void;
+  onRetryScheduled?: (event: import("../ingestion/types.js").IngestionEvent) => void;
+  onCompleted?: (event: import("../ingestion/types.js").IngestionEvent) => void;
+  onCompletedWithWarnings?: (event: import("../ingestion/types.js").IngestionEvent) => void;
+  onFailed?: (event: import("../ingestion/types.js").IngestionEvent) => void;
+  onAbandoned?: (event: import("../ingestion/types.js").IngestionEvent) => void;
 }
 
 export interface MemoGrafterQueueConfig {
@@ -405,6 +413,10 @@ export interface MemoGrafterQueueConfig {
   queueName?: string;
   removeOnComplete?: boolean | number;
   removeOnFail?: boolean | number;
+  attempts?: number;
+  backoff?: { type: "exponential" | "fixed"; delayMs: number };
+  enqueueTimeoutMs?: number;
+  processingTimeoutMs?: number;
   telemetry?: MemoGrafterQueueTelemetry;
 }
 
@@ -426,4 +438,5 @@ export interface MemoGrafterConfig {
   queue?: MemoGrafterQueueConfig;
   cache?: MemoGrafterCacheConfig;
   diagnostics?: import("../diagnostics.js").MemoGrafterDiagnostics;
+  ingestion?: { requirements?: import("../ingestion/types.js").IngestionRequirements };
 }

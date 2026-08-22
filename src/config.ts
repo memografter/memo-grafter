@@ -39,6 +39,7 @@ export interface MemoGrafterConfigOverrides {
   queue?: MemoGrafterQueueConfig | false;
   cache?: MemoGrafterCacheConfig | false;
   diagnostics?: MemoGrafterConfig["diagnostics"];
+  ingestion?: MemoGrafterConfig["ingestion"];
 }
 
 export function defineConfig(config: MemoGrafterProjectConfig): MemoGrafterProjectConfig;
@@ -95,6 +96,8 @@ export async function resolveMemoGrafterConfig(
     ...(cache !== undefined ? { cache } : {}),
     ...((overrides.diagnostics ?? projectConfig.diagnostics) !== undefined
       ? { diagnostics: overrides.diagnostics ?? projectConfig.diagnostics } : {}),
+    ...((overrides.ingestion ?? projectConfig.ingestion) !== undefined
+      ? { ingestion: overrides.ingestion ?? projectConfig.ingestion } : {}),
   };
 }
 
