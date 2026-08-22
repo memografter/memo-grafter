@@ -60,6 +60,12 @@ class IncrementalStore {
     }
   }
 
+  async appendMessages(_sessionId: string, messages: Message[]): Promise<{ startIndex: number; endIndex: number }> {
+    const startIndex = this.messages.length;
+    await this.saveMessagesAt(_sessionId, startIndex, messages);
+    return { startIndex, endIndex: startIndex + messages.length - 1 };
+  }
+
   async getRecentMessagesBefore(_sessionId: string, beforeIndex: number, limit: number): Promise<Message[]> {
     return this.messages.slice(Math.max(0, beforeIndex - limit), beforeIndex);
   }
@@ -105,6 +111,17 @@ class IncrementalStore {
 
     this.segments.push(segment);
     return segment;
+  }
+
+  async saveSegmentWithNode(
+    segment: TopicSegment,
+    node: TopicNode,
+  ): Promise<{ segment: TopicSegment; node: TopicNode }> {
+    const savedSegment = await this.saveSegment(segment);
+    const existing = this.nodes.find((candidate) => candidate.segmentId === savedSegment.id);
+    const stableNode = { ...node, id: existing?.id ?? node.id, segmentId: savedSegment.id };
+    await this.saveNode(stableNode);
+    return { segment: savedSegment, node: stableNode };
   }
 
   async saveNode(node: TopicNode): Promise<void> {
@@ -180,6 +197,85 @@ describe("IngestPipeline incremental ingest", () => {
     expect(store.messageWrites.map((write) => write.startIndex)).toEqual([0, 2]);
     expect(store.messages).toHaveLength(4);
     expect(store.ingestState?.lastIngestedMessageIndex).toBe(3);
+  });
+
+  it("preserves a failed exchange and recovers it with the next append", async () => {
+    const store = new IncrementalStore();
+    let extractionAttempts = 0;
+    const llm: LLMAdapter = {
+      async complete(): Promise<string> {
+        extractionAttempts += 1;
+        if (extractionAttempts === 1) throw new Error("temporary extraction failure");
+        return new FakeLLMAdapter().complete();
+      },
+    };
+    const pipeline = new IngestPipeline(
+      store as unknown as GraphStore,
+      llm,
+      new FakeEmbedAdapter(),
+      {
+        windowSize: 5,
+        topK: 3,
+        mode: "intent",
+        minSegmentMessages: 1,
+        driftSensitivity: "medium",
+      },
+    );
+    const firstPair: Message[] = [
+      { role: "user", content: "I am planning a Japan trip." },
+      { role: "assistant", content: "Which cities interest you?" },
+    ];
+    const secondPair: Message[] = [
+      { role: "user", content: "My budget is 2500 dollars." },
+      { role: "assistant", content: "I can plan around that budget." },
+    ];
+
+    await expect(pipeline.append(firstPair, "session-recovery")).rejects.toThrow("temporary extraction failure");
+
+    expect(store.messages).toEqual(firstPair);
+    expect(store.segments).toEqual([]);
+    expect(store.nodes).toEqual([]);
+    expect(store.ingestState).toBeNull();
+
+    await expect(pipeline.append(secondPair, "session-recovery")).resolves.not.toThrow();
+
+    expect(store.messages).toEqual([...firstPair, ...secondPair]);
+    expect(store.messageWrites.map((write) => write.startIndex)).toEqual([0, 2]);
+    expect(store.ingestState?.lastIngestedMessageIndex).toBe(3);
+    expect(store.nodes.length).toBeGreaterThan(0);
+  });
+
+  it("does not persist a segment when topic summary embedding fails", async () => {
+    const store = new IncrementalStore();
+    let embeddingCalls = 0;
+    const pipeline = new IngestPipeline(
+      store as unknown as GraphStore,
+      new FakeLLMAdapter(),
+      {
+        embed: async () => {
+          embeddingCalls += 1;
+          if (embeddingCalls === 3) throw new Error("summary embedding unavailable");
+          return new Array<number>(1536).fill(0);
+        },
+      },
+      {
+        windowSize: 5,
+        topK: 3,
+        mode: "intent",
+        minSegmentMessages: 1,
+        driftSensitivity: "medium",
+      },
+    );
+
+    await expect(pipeline.append([
+      { role: "user", content: "I want to switch jobs." },
+      { role: "assistant", content: "Let us build a transition plan." },
+    ], "session-summary-failure")).rejects.toThrow("summary embedding unavailable");
+
+    expect(store.messages).toHaveLength(2);
+    expect(store.segments).toEqual([]);
+    expect(store.nodes).toEqual([]);
+    expect(store.ingestState).toBeNull();
   });
 
   it("skips already ingested messages and appends nodes for new messages only", async () => {

@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- Prevented failed `analyze()` extraction attempts from allowing later exchanges to overwrite their buffered messages, including across queued job retries.
+- Prevented shared ingestion paths from leaving orphan segments when topic extraction or summary embedding fails.
+- Made PostgreSQL segment/topic persistence atomic and preserved topic-node IDs during retry upserts.
+
 ## [0.1.1] - 2026-05-14
 
 ### Added
