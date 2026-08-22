@@ -1,5 +1,7 @@
 import type { Content, GoogleGenAI } from "@google/genai";
 import type { EmbedAdapter, LLMAdapter, Message } from "../core/types.js";
+import { MemoGrafterError, isMemoGrafterError, type AdapterReadiness } from "../diagnostics.js";
+import { validateCompletion, validateEmbedding } from "./validation.js";
 
 export class GeminiLLMAdapter implements LLMAdapter {
   private clientPromise: Promise<GoogleGenAI> | undefined;
@@ -26,15 +28,17 @@ export class GeminiLLMAdapter implements LLMAdapter {
         ...(systemInstruction ? { config: { systemInstruction } } : {}),
       });
 
-      return response.text ?? "";
+      return validateCompletion(response.text);
     } catch (error) {
-      if (isMissingGeminiSdkError(error)) throw error;
-      throw new Error(
+      if (isMemoGrafterError(error)) throw error;
+      throw new MemoGrafterError(
         "Gemini completion failed. Configure GEMINI_API_KEY and verify the model and credentials.",
-        { cause: error },
+        { code: "PROVIDER_REQUEST_FAILED", operation: "ingest", stage: "provider-request", retryable: true, cause: error },
       );
     }
   }
+
+  validate(): Promise<AdapterReadiness> { return validateGemini("llm"); }
 
   private getClient(): Promise<GoogleGenAI> {
     if (this.clientPromise) return this.clientPromise;
@@ -52,7 +56,7 @@ export class GeminiEmbedAdapter implements EmbedAdapter {
 
   constructor(
     private readonly model = "gemini-embedding-001",
-    private readonly outputDimensionality = 1536
+    readonly dimensions = 1536
   ) {}
 
   async embed(text: string): Promise<number[]> {
@@ -62,20 +66,22 @@ export class GeminiEmbedAdapter implements EmbedAdapter {
         model: this.model,
         contents: text,
         config: {
-          outputDimensionality: this.outputDimensionality,
+          outputDimensionality: this.dimensions,
           taskType: "SEMANTIC_SIMILARITY",
         },
       });
 
-      return response.embeddings?.[0]?.values ?? [];
+      return validateEmbedding(response.embeddings?.[0]?.values, this.dimensions);
     } catch (error) {
-      if (isMissingGeminiSdkError(error)) throw error;
-      throw new Error(
+      if (isMemoGrafterError(error)) throw error;
+      throw new MemoGrafterError(
         "Gemini embedding failed. Configure GEMINI_API_KEY and verify the embedding model and credentials.",
-        { cause: error },
+        { code: "PROVIDER_REQUEST_FAILED", operation: "ingest", stage: "provider-request", retryable: true, cause: error },
       );
     }
   }
+
+  validate(): Promise<AdapterReadiness> { return validateGemini("embedder"); }
 
   private getClient(): Promise<GoogleGenAI> {
     if (this.clientPromise) return this.clientPromise;
@@ -99,14 +105,20 @@ async function loadGeminiClient(): Promise<GoogleGenAI> {
     );
   } catch (error) {
     if (isModuleNotFound(error, "@google/genai")) {
-      throw new Error(missingGeminiSdkMessage, { cause: error });
+      throw new MemoGrafterError(missingGeminiSdkMessage, { code: "PROVIDER_SDK_MISSING", operation: "readiness", stage: "provider-loading", retryable: false, context: { provider: "gemini" }, cause: error });
     }
     throw error;
   }
 }
 
-function isMissingGeminiSdkError(error: unknown): boolean {
-  return error instanceof Error && error.message === missingGeminiSdkMessage;
+async function validateGemini(adapter: string): Promise<AdapterReadiness> {
+  const checks: AdapterReadiness["checks"] = [];
+  try { await import("@google/genai"); checks.push({ id: `adapter.${adapter}.gemini-sdk`, status: "passed", message: "Gemini SDK is installed." }); }
+  catch { checks.push({ id: `adapter.${adapter}.gemini-sdk`, status: "failed", code: "PROVIDER_SDK_MISSING", message: missingGeminiSdkMessage, help: "Install it with: npm install @google/genai" }); }
+  checks.push(process.env.GEMINI_API_KEY
+    ? { id: `adapter.${adapter}.gemini-key`, status: "passed", message: "GEMINI_API_KEY is configured." }
+    : { id: `adapter.${adapter}.gemini-key`, status: "failed", code: "PROVIDER_CONFIGURATION_MISSING", message: "GEMINI_API_KEY is not configured.", help: "Set GEMINI_API_KEY before using the adapter." });
+  return { ready: checks.every((check) => check.status !== "failed"), checks };
 }
 
 function isModuleNotFound(error: unknown, packageName: string): boolean {

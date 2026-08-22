@@ -4,6 +4,8 @@
 
 <h1 align="center">MemoGrafter</h1>
 
+> `MemoGrafter.create()` performs non-network provider readiness checks before storage initialization. Use `await memo.checkReadiness()` for structured checks, inspect `MemoGrafterError.code` and `operation` at public boundaries, and subscribe to best-effort warnings with `config.diagnostics.onWarning`.
+
 <p align="center">
   Lifecycle-managed memory for TypeScript AI agents.
 </p>

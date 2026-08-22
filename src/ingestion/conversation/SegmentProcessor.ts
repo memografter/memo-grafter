@@ -19,6 +19,8 @@ import {
   parseSegmentExtraction,
 } from "../../utils/extraction/segmentExtraction.js";
 import type { DriftSegment } from "./TopicDriftDetector.js";
+import { emitWarning, type MemoGrafterDiagnostics } from "../../diagnostics.js";
+import { validateCompletion, validateEmbedding } from "../../adapters/validation.js";
 
 export class SegmentProcessor {
   constructor(
@@ -28,6 +30,7 @@ export class SegmentProcessor {
     private readonly config: {
       topK: number;
       semanticThreshold: number;
+      diagnostics?: MemoGrafterDiagnostics;
     },
   ) {}
 
@@ -70,10 +73,10 @@ export class SegmentProcessor {
       segment.endIndex - messageOffset + 1,
     );
     const extractionPrompt = buildSegmentExtractionPrompt(segmentMessages, options.label);
-    const raw = await this.llm.complete([{ role: "user", content: extractionPrompt }]);
-    const extracted = parseSegmentExtraction(raw);
+    const raw = validateCompletion(await this.llm.complete([{ role: "user", content: extractionPrompt }]));
+    const extracted = parseSegmentExtraction(raw, this.config.diagnostics);
     const summary = buildSegmentSummary(extracted);
-    const embedding = await this.embedder.embed(summary);
+    const embedding = validateEmbedding(await this.embedder.embed(summary), this.embedder.dimensions);
 
     return {
       extracted,
@@ -128,7 +131,7 @@ export class SegmentProcessor {
       const nodes: MemoryNodeInsert[] = [];
 
       for (const memory of memories) {
-        const embedding = await this.embedder.embed(formatMemoryEmbeddingText(memory));
+        const embedding = validateEmbedding(await this.embedder.embed(formatMemoryEmbeddingText(memory)), this.embedder.dimensions);
         nodes.push({
           id: randomUUID(),
           segmentId: segment.id,
@@ -156,6 +159,7 @@ export class SegmentProcessor {
       await this.store.insertMemories(nodes);
       await this.store.buildMemoryEdges(topicNode.id, segment.sessionId, this.config.semanticThreshold);
     } catch (error) {
+      emitWarning(this.config.diagnostics, { code: "BEST_EFFORT_OPERATION_FAILED", operation: "analyze", stage: "graph-processing", context: { sessionId: segment.sessionId, messageRange: [segment.startIndex, segment.endIndex] }, cause: error });
       console.warn("SegmentProcessor memory processing warning:", error);
     }
   }

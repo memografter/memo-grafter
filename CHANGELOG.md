@@ -4,6 +4,12 @@ All notable changes to this project will be documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Added typed public errors, warnings, safe serialization, and non-network provider readiness checks.
+- Added provider completion, extraction, and embedding response validation at public analysis and context boundaries.
+- Preserved specific provider error codes while attaching safe ingestion state metadata.
+
 ### Fixed
 
 - Prevented failed `analyze()` extraction attempts from allowing later exchanges to overwrite their buffered messages, including across queued job retries.

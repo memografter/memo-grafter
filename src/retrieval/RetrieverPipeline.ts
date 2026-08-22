@@ -14,6 +14,8 @@ import type {
 } from "../core/types.js";
 import { countApproxTokens } from "../utils/text/tokenCount.js";
 import { normalizeTags } from "../utils/tags.js";
+import { validateEmbedding } from "../adapters/validation.js";
+import { emitWarning, type MemoGrafterDiagnostics } from "../diagnostics.js";
 
 type ScoredMemoryNode = MemoryNode & { similarity: number };
 type RankedMemoryNode = ScoredMemoryNode & { retrievalScore: number };
@@ -36,6 +38,7 @@ export class RetrieverPipeline {
     private config: RetrieverConfig,
     /** @internal */
     private cacheRedis: Redis | null = null,
+    private diagnostics?: MemoGrafterDiagnostics,
   ) {}
 
   async run(query: string, sessionId: string): Promise<RetrievalResult> {
@@ -51,7 +54,7 @@ export class RetrieverPipeline {
     const sessionIds = this.resolveSessionIds(sessionId);
     const hasConfiguredSessionIds = configuredSessionIds.length > 0;
 
-    const embedding = await this.embedder.embed(query);
+    const embedding = validateEmbedding(await this.embedder.embed(query), this.embedder.dimensions, "context");
     const searchedFacts = await this.searchMemories(embedding, sessionId, limit, minSimilarity, {
       tags,
       tagMode,
@@ -161,6 +164,7 @@ export class RetrieverPipeline {
 
       return searchedFacts;
     } catch (error: unknown) {
+      emitWarning(this.diagnostics, { code: "CACHE_UNAVAILABLE", operation: "context", context: { sessionId }, cause: error });
       console.warn("MemoGrafter recall cache warning:", error);
       return this.store.searchMemories(
         embedding,
