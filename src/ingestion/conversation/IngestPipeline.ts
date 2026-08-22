@@ -82,14 +82,34 @@ export class IngestPipeline {
     return previous
       .then(async () => {
         if (messages.length === 0) return [];
-        const ingestState = await this.store.getSessionIngestState(sessionId);
-        const startIndex = (ingestState?.lastIngestedMessageIndex ?? -1) + 1;
-        return this.runIncremental(messages, sessionId, startIndex, options, startIndex);
+        const { startIndex } = await this.stageAppend(messages, sessionId);
+        return this.runPersistedAppend(messages, sessionId, startIndex, options);
       })
       .finally(() => {
         release();
         if (this.pendingAppends.get(sessionId) === turn) this.pendingAppends.delete(sessionId);
       });
+  }
+
+  /** Persist an append and reserve durable indexes without advancing graph ingestion state. */
+  async stageAppend(messages: Message[], sessionId: string): Promise<{ startIndex: number; endIndex: number }> {
+    if (messages.length === 0) return { startIndex: 0, endIndex: -1 };
+    if (this.store.appendMessages) return this.store.appendMessages(sessionId, messages);
+
+    const ingestState = await this.store.getSessionIngestState(sessionId);
+    const startIndex = (ingestState?.lastIngestedMessageIndex ?? -1) + 1;
+    await this.store.saveMessagesAt(sessionId, startIndex, messages);
+    return { startIndex, endIndex: startIndex + messages.length - 1 };
+  }
+
+  /** Process an exchange already persisted by stageAppend(). */
+  runPersistedAppend(
+    messages: Message[],
+    sessionId: string,
+    startIndex: number,
+    options: IngestPipelineOptions = {},
+  ): Promise<TopicNode[]> {
+    return this.runIncremental(messages, sessionId, startIndex, options, undefined, true);
   }
 
   async runIncremental(
@@ -98,6 +118,7 @@ export class IngestPipeline {
     startIndex: number,
     options: IngestPipelineOptions = {},
     knownFirstNewMessageIndex?: number,
+    messagesAlreadyPersisted = false,
   ): Promise<TopicNode[]> {
     if (messages.length === 0) return [];
 
@@ -112,7 +133,9 @@ export class IngestPipeline {
     const firstJobMessageIndex = Math.max(startIndex, firstNewMessageIndex);
     const firstJobMessageOffset = firstJobMessageIndex - startIndex;
     const unprocessedJobMessages = messages.slice(firstJobMessageOffset);
-    await this.store.saveMessagesAt(sessionId, firstJobMessageIndex, unprocessedJobMessages);
+    if (!messagesAlreadyPersisted) {
+      await this.store.saveMessagesAt(sessionId, firstJobMessageIndex, unprocessedJobMessages);
+    }
 
     let newMessages = unprocessedJobMessages;
     if (firstJobMessageIndex > firstNewMessageIndex) {

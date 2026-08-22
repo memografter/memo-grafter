@@ -42,7 +42,7 @@ The default application flow starts with `MemoGrafterAgent.invoke()`:
 6. The newly completed user-assistant pair and its absolute start index are queued for background ingestion. If an enqueue attempt fails, the agent retains that unsent range and includes it with the next enqueue attempt.
 7. Ingestion persists only unprocessed messages, loads a small preceding overlap from storage, appends new graph state, and updates graph edges.
 
-Applications that already own their LLM call use the split external-integration flow instead. Before generation they call `MemoGrafter.context({ sessionId, query, ...retrieverOptions })` to build fresh prompt-ready memory without invoking the configured LLM or consulting the recall cache. After generation they call `MemoGrafter.analyze({ sessionId, userMessage, assistantMessage, tags? })`; this serially appends exactly that completed exchange after the session ingest cursor and reuses the same drift, extraction, persistence, and edge-building stages. In queue mode `analyze()` submits an `append` job and returns an empty node array after enqueue, so graph visibility follows worker completion.
+Applications that already own their LLM call use the split external-integration flow instead. Before generation they call `MemoGrafter.context({ sessionId, query, ...retrieverOptions })` to build fresh prompt-ready memory without invoking the configured LLM or consulting the recall cache. After generation they call `MemoGrafter.analyze({ sessionId, userMessage, assistantMessage, tags? })`; this atomically appends exactly that completed exchange after the durable message buffer and reuses the same drift, extraction, persistence, and edge-building stages. In queue mode the exchange is durably staged before its `append` job is submitted and `analyze()` returns an empty node array after enqueue, so graph visibility follows worker completion.
 
 `MemoGrafterAgent.ingestText()` is a separate write path for non-conversational content. It splits raw text into internal chunks using line, sentence, and maximum-size boundaries, then adds those chunks to the graph ingestion history without adding them to public chat history or running the assistant response-generation call. The existing drift detector runs across the chunks, and the extraction LLM, topic segmentation, memory extraction, and edge-building stages are reused.
 
@@ -65,7 +65,7 @@ indexed messages + sessionId
   -> add reentry edges when detected
 ```
 
-The current ingestion model is incremental. `mg_session_ingest_state` tracks the last processed message index for each session, so repeated jobs are no-ops and partially overlapping jobs are trimmed to their unprocessed suffix. Indexed jobs never advance the cursor across a missing range. External `analyze()` calls use `IngestPipeline.append()`, which serializes appends per process and assigns the next absolute index from the durable cursor; the BullMQ equivalent is the `append` job kind. Existing topic nodes, grafted nodes, memory nodes, and graph edges are preserved during normal `invoke()` or external integration processing. `clearSession()` remains available as an explicit reset API rather than a default ingest step.
+The current ingestion model is incremental. `mg_session_ingest_state` tracks the last successfully processed message index for each session, so repeated jobs are no-ops and partially overlapping jobs are trimmed to their unprocessed suffix. Indexed jobs never advance the cursor across a missing range. External `analyze()` calls use `IngestPipeline.append()`, which serializes appends per process and atomically assigns the next absolute index from `mg_message_buffer`; the PostgreSQL store also uses a session advisory lock for cross-process allocation. The graph cursor remains unchanged when extraction fails, allowing the next append to process the contiguous backlog without overwriting it. The BullMQ append path stages the range before enqueue so retries reuse the same indexes. Existing topic nodes, grafted nodes, memory nodes, and graph edges are preserved during normal `invoke()` or external integration processing. `clearSession()` remains available as an explicit reset API rather than a default ingest step.
 
 ## Main Components
 
@@ -155,13 +155,15 @@ The output is a list of drift segments plus a reentry map used later by ingestio
 
 For each segment it:
 
-1. saves a `TopicSegment`;
-2. builds a segment extraction prompt from the segment messages;
-3. parses the LLM extraction into a label, summary fields, and typed memories;
-4. embeds the segment summary;
-5. saves a `TopicNode`;
+1. builds a segment extraction prompt from the segment messages;
+2. parses the LLM extraction into a label, summary fields, and typed memories;
+3. builds and embeds the segment summary before graph persistence begins;
+4. prepares the topic node from the extracted fields;
+5. atomically saves the `TopicSegment` and `TopicNode`, preserving an existing topic ID on retry;
 6. embeds and inserts atomic `MemoryNode` records;
 7. builds semantic memory edges inside the topic when appropriate.
+
+Provider and embedding failures therefore leave buffered messages available for retry without creating orphan segment rows. Memory persistence remains best-effort after the topic is durable.
 
 The topic node is the coarse unit of conversation memory. Memory nodes are the finer-grained facts, insights, questions, tasks, or references used by targeted recall. When ingestion receives tags, the same normalized tag set is written to the topic node and every memory node produced for that segment.
 

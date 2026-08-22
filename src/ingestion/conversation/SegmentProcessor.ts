@@ -21,14 +21,6 @@ import {
 import type { DriftSegment } from "./TopicDriftDetector.js";
 
 export class SegmentProcessor {
-  private lastExtraction: SegmentExtractionResult = {
-    label: "Unknown",
-    userIntent: "",
-    outcome: "",
-    open: null,
-    memories: [],
-  };
-
   constructor(
     private readonly store: GraphStore,
     private readonly llm: LLMAdapter,
@@ -46,15 +38,16 @@ export class SegmentProcessor {
     options: IngestPipelineOptions = {},
     messageOffset = 0,
   ): Promise<TopicNode> {
-    const savedSegment = await this.createSegment(segment, sessionId);
+    const candidateSegment = this.createSegment(segment, sessionId);
     const tags = normalizeTags(options.tags);
-    const topicNode = await this.nodeRunner(savedSegment, messages, tags, options, messageOffset);
-    await this.processMemories(this.lastExtraction.memories, savedSegment, topicNode, options);
-    return topicNode;
+    const prepared = await this.prepareTopic(candidateSegment, messages, tags, options, messageOffset);
+    const persisted = await this.persistTopic(candidateSegment, prepared.node);
+    await this.processMemories(prepared.extracted.memories, persisted.segment, persisted.node, options);
+    return persisted.node;
   }
 
-  private async createSegment(segment: DriftSegment, sessionId: string): Promise<TopicSegment> {
-    return this.store.saveSegment({
+  private createSegment(segment: DriftSegment, sessionId: string): TopicSegment {
+    return {
       id: randomUUID(),
       sessionId,
       startIndex: segment.start,
@@ -62,28 +55,16 @@ export class SegmentProcessor {
       topicOrder: segment.topicOrder,
       driftScore: segment.driftScore,
       createdAt: new Date(),
-    });
+    };
   }
 
-  private async nodeRunner(
+  private async prepareTopic(
     segment: TopicSegment,
     messages: Message[],
     tags: string[],
     options: IngestPipelineOptions,
     messageOffset: number,
-  ): Promise<TopicNode> {
-    const node = await this.nodeProcessor(messages, segment, tags, options, messageOffset);
-    await this.store.saveNode(node);
-    return node;
-  }
-
-  private async nodeProcessor(
-    messages: Message[],
-    segment: TopicSegment,
-    tags: string[],
-    options: IngestPipelineOptions,
-    messageOffset: number,
-  ): Promise<TopicNode> {
+  ): Promise<{ extracted: SegmentExtractionResult; node: TopicNode }> {
     const segmentMessages = messages.slice(
       segment.startIndex - messageOffset,
       segment.endIndex - messageOffset + 1,
@@ -91,27 +72,48 @@ export class SegmentProcessor {
     const extractionPrompt = buildSegmentExtractionPrompt(segmentMessages, options.label);
     const raw = await this.llm.complete([{ role: "user", content: extractionPrompt }]);
     const extracted = parseSegmentExtraction(raw);
-    this.lastExtraction = extracted;
     const summary = buildSegmentSummary(extracted);
     const embedding = await this.embedder.embed(summary);
 
     return {
-      id: randomUUID(),
-      sessionId: segment.sessionId,
-      segmentId: segment.id,
-      label: extracted.label,
-      summary,
-      embedding,
-      tags,
-      ...(options.source ? { source: options.source } : {}),
-      messageRange: [segment.startIndex, segment.endIndex],
-      topicOrder: segment.topicOrder,
-      driftScore: segment.driftScore,
-      agentColor: null,
-      fleetId: null,
-      agentId: null,
-      createdAt: new Date(),
+      extracted,
+      node: {
+        id: randomUUID(),
+        sessionId: segment.sessionId,
+        segmentId: segment.id,
+        label: extracted.label,
+        summary,
+        embedding,
+        tags,
+        ...(options.source ? { source: options.source } : {}),
+        messageRange: [segment.startIndex, segment.endIndex],
+        topicOrder: segment.topicOrder,
+        driftScore: segment.driftScore,
+        agentColor: null,
+        fleetId: null,
+        agentId: null,
+        createdAt: new Date(),
+      },
     };
+  }
+
+  private async persistTopic(
+    segment: TopicSegment,
+    node: TopicNode,
+  ): Promise<{ segment: TopicSegment; node: TopicNode }> {
+    if (this.store.saveSegmentWithNode) return this.store.saveSegmentWithNode(segment, node);
+
+    const savedSegment = await this.store.saveSegment(segment);
+    const existingNode = typeof this.store.getNodeBySegment === "function"
+      ? await this.store.getNodeBySegment(savedSegment.id)
+      : null;
+    const stableNode = {
+      ...node,
+      id: existingNode?.id ?? node.id,
+      segmentId: savedSegment.id,
+    };
+    await this.store.saveNode(stableNode);
+    return { segment: savedSegment, node: stableNode };
   }
 
   private async processMemories(

@@ -29,11 +29,15 @@ export interface GraphStore {
   verifySchema(): Promise<void>;
   saveMessages(sessionId: string, messages: Message[]): Promise<void>;
   saveMessagesAt(sessionId: string, startIndex: number, messages: Message[]): Promise<void>;
+  /** Atomically reserve indexes and append messages. Custom stores may omit this for legacy behavior. */
+  appendMessages?(sessionId: string, messages: Message[]): Promise<{ startIndex: number; endIndex: number }>;
   getMessagesBySession(sessionId: string, startIndex?: number, endIndex?: number): Promise<Message[]>;
   getRecentMessagesBefore(sessionId: string, beforeIndex: number, limit: number): Promise<Message[]>;
   getSessionIngestState(sessionId: string): Promise<SessionIngestState | null>;
   updateSessionIngestState(sessionId: string, lastIngestedMessageIndex: number): Promise<void>;
   saveSegment(segment: TopicSegment): Promise<TopicSegment>;
+  /** Atomically persist a segment and its topic when supported by the store. */
+  saveSegmentWithNode?(segment: TopicSegment, node: TopicNode): Promise<{ segment: TopicSegment; node: TopicNode }>;
   saveNode(node: TopicNode): Promise<void>;
   saveEdge(edge: TopicEdge): Promise<void>;
   getEdgesByType(sessionId: string, type: string): Promise<TopicEdge[]>;

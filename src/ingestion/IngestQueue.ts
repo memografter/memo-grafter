@@ -15,6 +15,7 @@ type IngestJobData = {
 } | {
   kind: "append";
   messages: Message[];
+  startIndex?: number;
   sessionId: string;
   options?: IngestPipelineOptions;
 } | {
@@ -106,10 +107,11 @@ export class IngestQueue {
     options: IngestPipelineOptions = {},
   ): Promise<void> {
     try {
+      const { startIndex } = await this.pipeline.stageAppend(messages, sessionId);
       await this.withTimeout(
         this.queue.add(
           "ingest-append",
-          { kind: "append", messages: [...messages], sessionId, options },
+          { kind: "append", messages: [...messages], startIndex, sessionId, options },
           this.defaultJobOptions,
         ),
         1000,
@@ -177,7 +179,16 @@ export class IngestQueue {
           }
 
           if (job.data.kind === "append") {
-            await this.pipeline.append(job.data.messages, job.data.sessionId, job.data.options ?? {});
+            if (job.data.startIndex === undefined) {
+              await this.pipeline.append(job.data.messages, job.data.sessionId, job.data.options ?? {});
+            } else {
+              await this.pipeline.runPersistedAppend(
+                job.data.messages,
+                job.data.sessionId,
+                job.data.startIndex,
+                job.data.options ?? {},
+              );
+            }
             return;
           }
 

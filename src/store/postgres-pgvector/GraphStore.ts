@@ -432,6 +432,33 @@ export class PostgresGraphStore implements GraphStore {
     }
   }
 
+  async appendMessages(
+    sessionId: string,
+    messages: Message[],
+  ): Promise<{ startIndex: number; endIndex: number }> {
+    return this.sql.begin(async (transaction) => {
+      await transaction`SELECT pg_advisory_xact_lock(hashtext(${`memo-grafter-session:${sessionId}`}))`;
+      const rows = await transaction<{ start_index: number }[]>`
+        SELECT COALESCE(MAX(message_index), -1)::int + 1 AS start_index
+        FROM mg_message_buffer
+        WHERE session_id = ${sessionId}
+      `;
+      const startIndex = rows[0]?.start_index ?? 0;
+
+      for (const [offset, message] of messages.entries()) {
+        await transaction`
+          INSERT INTO mg_message_buffer (session_id, message_index, role, content)
+          VALUES (${sessionId}, ${startIndex + offset}, ${message.role}, ${message.content})
+        `;
+      }
+
+      return {
+        startIndex,
+        endIndex: startIndex + messages.length - 1,
+      };
+    });
+  }
+
   async getMessagesBySession(sessionId: string, startIndex?: number, endIndex?: number): Promise<Message[]> {
     const rows = await this.sql<MessageRow[]>`
       SELECT * FROM mg_message_buffer
@@ -509,6 +536,59 @@ export class PostgresGraphStore implements GraphStore {
     return this.rowToSegment(rows[0]);
   }
 
+  async saveSegmentWithNode(
+    segment: TopicSegment,
+    node: TopicNode,
+  ): Promise<{ segment: TopicSegment; node: TopicNode }> {
+    return this.sql.begin(async (transaction) => {
+      const segmentRows = await transaction<TopicSegmentRow[]>`
+        INSERT INTO mg_segments (id, session_id, start_index, end_index, topic_order, drift_score, created_at)
+        VALUES (
+          ${segment.id}, ${segment.sessionId}, ${segment.startIndex}, ${segment.endIndex},
+          ${segment.topicOrder}, ${segment.driftScore}, ${segment.createdAt}
+        )
+        ON CONFLICT (session_id, start_index, end_index)
+        DO UPDATE SET
+          topic_order = EXCLUDED.topic_order,
+          drift_score = EXCLUDED.drift_score
+        RETURNING *
+      `;
+      const savedSegment = this.rowToSegment(segmentRows[0]);
+      const nodeRows = await transaction<TopicNodeRow[]>`
+        INSERT INTO mg_topic_nodes (
+          id, session_id, segment_id, label, summary, embedding, tags, source,
+          message_range, topic_order, drift_score, agent_color, fleet_id, agent_id, created_at
+        )
+        VALUES (
+          ${node.id}, ${node.sessionId}, ${savedSegment.id}, ${node.label}, ${node.summary},
+          ${toVectorLiteral(node.embedding)}::vector,
+          ${transaction.array(normalizeTags(node.tags))}::text[], ${node.source ?? null},
+          ${node.messageRange}, ${node.topicOrder}, ${node.driftScore}, ${node.agentColor},
+          ${node.fleetId}, ${node.agentId}, ${node.createdAt}
+        )
+        ON CONFLICT (segment_id)
+        DO UPDATE SET
+          session_id = EXCLUDED.session_id,
+          label = EXCLUDED.label,
+          summary = EXCLUDED.summary,
+          embedding = EXCLUDED.embedding,
+          tags = EXCLUDED.tags,
+          source = EXCLUDED.source,
+          message_range = EXCLUDED.message_range,
+          topic_order = EXCLUDED.topic_order,
+          drift_score = EXCLUDED.drift_score,
+          agent_color = EXCLUDED.agent_color,
+          fleet_id = EXCLUDED.fleet_id,
+          agent_id = EXCLUDED.agent_id
+        RETURNING *
+      `;
+
+      const savedNodeRow = nodeRows[0];
+      if (!savedNodeRow) throw new Error("MemoGrafter topic upsert did not return a row.");
+      return { segment: savedSegment, node: this.rowToNode(savedNodeRow) };
+    });
+  }
+
   async saveNode(node: TopicNode): Promise<void> {
     await this.sql`
       INSERT INTO mg_topic_nodes (
@@ -547,7 +627,6 @@ export class PostgresGraphStore implements GraphStore {
       )
       ON CONFLICT (segment_id)
       DO UPDATE SET
-        id = EXCLUDED.id,
         session_id = EXCLUDED.session_id,
         label = EXCLUDED.label,
         summary = EXCLUDED.summary,
