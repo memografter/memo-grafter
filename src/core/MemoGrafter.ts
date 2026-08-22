@@ -35,6 +35,8 @@ import { composePinnedTopicContext } from "../prompts/pinnedTopicPrompt.js";
 import { buildFactRetrievalPrompt, formatFactBlock } from "../prompts/factRetrievalPrompt.js";
 import { countApproxTokens } from "../utils/text/tokenCount.js";
 import { MemoGrafterError, emitWarning, enrichMemoGrafterError, isMemoGrafterError, type MemoGrafterDiagnostics, type ReadinessResult } from "../diagnostics.js";
+import type { AnalyzeDetailedInput, AnalyzeReceipt, IngestionRun, MemoGrafterCloseOptions, ReconciliationOptions, ReconciliationReport } from "../ingestion/types.js";
+import { MemoGrafterShutdownError } from "../ingestion/types.js";
 
 export class MemoGrafter {
   readonly llm: LLMAdapter;
@@ -49,6 +51,7 @@ export class MemoGrafter {
   private readonly pinnedTokenBudget: number;
   private readonly diagnostics: MemoGrafterDiagnostics | undefined;
   private storageInitialized = false;
+  private readonly pendingDetailedAnalyze = new Map<string, Promise<void>>();
 
   constructor(config: MemoGrafterConfig) {
     this.assertServerEnvironment();
@@ -102,13 +105,14 @@ export class MemoGrafter {
       ...(reentryThreshold !== undefined ? { reentryThreshold } : {}),
       ...(adaptiveSensitivity !== undefined ? { adaptiveSensitivity } : {}),
       ...(config.diagnostics !== undefined ? { diagnostics: config.diagnostics } : {}),
+      ...(config.ingestion?.requirements !== undefined ? { requirements: config.ingestion.requirements } : {}),
     });
     this.grafterPipeline = new GrafterPipeline(this.store, {
       hopDepth,
       bufferSize,
       tokenBudget,
     });
-    this.ingestQueue = config.queue ? new IngestQueue(this.ingestPipeline, config.queue) : null;
+    this.ingestQueue = config.queue ? new IngestQueue(this.ingestPipeline, config.queue, this.store) : null;
   }
 
   static async create(
@@ -199,26 +203,55 @@ export class MemoGrafter {
     assistantMessage: string;
     tags?: string[];
   }): Promise<TopicNode[]> {
-    const sessionId = this.requireNonBlankString(input?.sessionId, "sessionId");
-    const userMessage = this.requireNonBlankString(input?.userMessage, "userMessage");
-    const assistantMessage = this.requireNonBlankString(input?.assistantMessage, "assistantMessage");
-    if (input.tags !== undefined && (!Array.isArray(input.tags) || input.tags.some((tag) => typeof tag !== "string"))) {
-      throw new MemoGrafterError("MemoGrafter analyze tags must be an array of strings.", { code: "INPUT_INVALID", operation: "analyze", retryable: false, context: { field: "tags" } });
+    const validated = this.validateAnalyzeInput(input);
+    if (this.storageInitialized && this.store.acceptIngestionRun && this.store.commitPreparedIngestion && this.store.transitionIngestionRun) {
+      return this.runDetailedAnalyze(validated).then((receipt) => receipt.nodes ?? []);
     }
-
-    const messages: Message[] = [
-      { role: "user", content: userMessage },
-      { role: "assistant", content: assistantMessage },
-    ];
-    const options: IngestOptions = input.tags ? { tags: input.tags } : {};
-
+    const options: IngestOptions = validated.tags ? { tags: validated.tags } : {};
     const analysis = this.ingestQueue
-      ? this.ingestQueue.enqueueAppend(messages, sessionId, options).then(() => [] as TopicNode[])
-      : this.ingestPipeline.append(messages, sessionId, options);
+      ? this.ingestQueue.enqueueAppend(validated.messages, validated.sessionId, options).then(() => [] as TopicNode[])
+      : this.ingestPipeline.append(validated.messages, validated.sessionId, options);
     return analysis.catch((error: unknown) => {
       if (isMemoGrafterError(error)) throw enrichMemoGrafterError(error, { operation: "analyze" });
-      throw new MemoGrafterError("MemoGrafter analysis failed.", { code: "INGESTION_FAILED", operation: "analyze", retryable: true, context: { sessionId, messageRange: [0, 1], retrySafe: false }, cause: error });
+      throw new MemoGrafterError("MemoGrafter analysis failed.", { code: "INGESTION_FAILED", operation: "analyze", retryable: true, context: { sessionId: validated.sessionId, messageRange: [0, 1], retrySafe: false }, cause: error });
     });
+  }
+
+  analyzeDetailed(input: AnalyzeDetailedInput): Promise<AnalyzeReceipt> {
+    const validated = this.validateAnalyzeInput(input);
+    if (!this.storageInitialized) throw new MemoGrafterError("MemoGrafter must be initialized before analyzeDetailed().", { code: "STORAGE_INITIALIZATION_FAILED", operation: "analyze", retryable: false });
+    if (!this.store.acceptIngestionRun || !this.store.commitPreparedIngestion || !this.store.transitionIngestionRun) {
+      throw new MemoGrafterError("analyzeDetailed requires a durable ingestion store.", { code: "CONFIGURATION_INVALID", operation: "analyze", retryable: false });
+    }
+    return this.runDetailedAnalyze(validated);
+  }
+
+  getIngestionRun(runId: string): Promise<IngestionRun | null> {
+    if (!this.store.getIngestionRun) throw new MemoGrafterError("The configured store does not expose ingestion runs.", { code: "CONFIGURATION_INVALID", operation: "ingest", retryable: false });
+    return this.store.getIngestionRun(this.requireNonBlankString(runId, "runId"));
+  }
+
+  private async runDetailedAnalyze(input: { sessionId: string; messages: Message[]; tags?: string[]; idempotencyKey?: string }): Promise<AnalyzeReceipt> {
+    const run = await this.store.acceptIngestionRun!({ sessionId: input.sessionId, kind: "append", messages: input.messages, ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}) });
+    const options: IngestOptions = input.tags ? { tags: input.tags } : {};
+    if (this.ingestQueue) {
+      if (run.status === "queued" || run.status === "running") return { status: "queued", ingestionRunId: run.id, sessionId: run.sessionId, messageRange: [run.startIndex, run.endIndex], messagesPersisted: true, graphProcessed: false, job: { id: run.id, queueName: this.ingestQueue.getQueueName() } };
+      if (run.status === "completed" || run.status === "completed_with_warnings") {
+        const nodes = (await this.store.getNodesBySession(run.sessionId)).filter((node) => node.messageRange[0] >= run.startIndex && node.messageRange[1] <= run.endIndex);
+        return { status: "processed", ingestionRunId: run.id, sessionId: run.sessionId, messageRange: [run.startIndex, run.endIndex], messagesPersisted: true, graphProcessed: true, nodes };
+      }
+      const job = await this.ingestQueue.enqueueRun(run, options);
+      return { status: "queued", ingestionRunId: run.id, sessionId: run.sessionId, messageRange: [run.startIndex, run.endIndex], messagesPersisted: true, graphProcessed: false, job };
+    }
+    const previous = this.pendingDetailedAnalyze.get(run.sessionId) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => { release = resolve; });
+    const tail = previous.then(() => current);
+    this.pendingDetailedAnalyze.set(run.sessionId, tail);
+    let result: Awaited<ReturnType<IngestPipeline["processIngestionRun"]>>;
+    try { await previous; result = await this.ingestPipeline.processIngestionRun(run, options); }
+    finally { release(); if (this.pendingDetailedAnalyze.get(run.sessionId) === tail) this.pendingDetailedAnalyze.delete(run.sessionId); }
+    return { status: "processed", ingestionRunId: run.id, sessionId: run.sessionId, messageRange: [run.startIndex, run.endIndex], messagesPersisted: true, graphProcessed: true, nodes: result.nodes, ...(result.warnings.length ? { warnings: result.warnings } : {}) };
   }
 
   /** Retrieve fresh graph context for an external LLM call. */
@@ -283,6 +316,13 @@ export class MemoGrafter {
     startIndex: number,
     options: IngestOptions = {},
   ): Promise<void> {
+    if (this.storageInitialized && this.store.acceptIngestionRun && this.store.transitionIngestionRun && this.store.commitPreparedIngestion) {
+      const run = await this.store.acceptIngestionRun({ sessionId, kind: "messages", messages });
+      if (run.startIndex !== startIndex) throw new MemoGrafterError(`Accepted range starts at ${run.startIndex}, expected ${startIndex}.`, { code: "INGESTION_INVARIANT_VIOLATION", operation: "ingest", retryable: false, context: { sessionId, messageRange: [run.startIndex, run.endIndex], jobId: run.id } });
+      if (this.ingestQueue) await this.ingestQueue.enqueueRun(run, options);
+      else await this.ingestPipeline.processIngestionRun(run, options);
+      return;
+    }
     if (this.ingestQueue) {
       await this.ingestQueue.enqueueIncremental(messages, sessionId, startIndex, options);
       return;
@@ -444,13 +484,54 @@ export class MemoGrafter {
     return new MemoGrafterFleet(this, options);
   }
 
-  async close(): Promise<void> {
-    await this.ingestQueue?.close();
-    await this.recallCache?.quit().catch((error: unknown) => {
-      console.warn("MemoGrafter recall cache close warning:", error);
-      this.recallCache?.disconnect();
-    });
-    await this.store.close();
+  async close(options: MemoGrafterCloseOptions = {}): Promise<void> {
+    if (!options.drain) {
+      await this.ingestQueue?.close();
+      await this.recallCache?.quit().catch((error: unknown) => { console.warn("MemoGrafter recall cache close warning:", error); this.recallCache?.disconnect(); });
+      await this.store.close();
+      return;
+    }
+    const failures: string[] = [];
+    const timeoutMs = options.timeoutMs ?? 10_000;
+    const deadline = Date.now() + timeoutMs;
+    let pending = await this.store.countActiveIngestionRuns?.().catch(() => -1) ?? 0;
+    while (pending > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(100, Math.max(1, deadline - Date.now()))));
+      pending = await this.store.countActiveIngestionRuns?.().catch(() => pending) ?? 0;
+    }
+    await this.ingestQueue?.close({ strict: true }).catch((error: unknown) => failures.push(error instanceof Error ? error.message : "Queue close failed."));
+    await this.recallCache?.quit().catch((error: unknown) => { failures.push(error instanceof Error ? error.message : "Redis close failed."); this.recallCache?.disconnect(); });
+    await this.store.close().catch((error: unknown) => failures.push(error instanceof Error ? error.message : "Store close failed."));
+    if (failures.length || pending > 0) throw new MemoGrafterShutdownError("MemoGrafter did not shut down cleanly.", failures, pending, pending > 0);
+  }
+
+  async reconcileSession(sessionId: string, options: ReconciliationOptions = {}): Promise<ReconciliationReport> {
+    return this.reconcile(this.requireNonBlankString(sessionId, "sessionId"), options);
+  }
+
+  reconcilePendingIngestion(options: ReconciliationOptions = {}): Promise<ReconciliationReport> { return this.reconcile(undefined, options); }
+
+  private async reconcile(sessionId: string | undefined, options: ReconciliationOptions): Promise<ReconciliationReport> {
+    if (!this.store.inspectIngestionConsistency || !this.store.listIngestionRuns || !this.store.transitionIngestionRun) throw new MemoGrafterError("The configured store does not support ingestion reconciliation.", { code: "CONFIGURATION_INVALID", operation: "ingest", retryable: false });
+    const issues = await this.store.inspectIngestionConsistency(sessionId);
+    const repaired: ReconciliationReport["repaired"] = [];
+    if (options.mode === "repair") {
+      const selected = new Set(options.repairs ?? []);
+      for (const issue of issues) {
+        if (!issue.runId) continue;
+        const run = await this.store.getIngestionRun?.(issue.runId);
+        if (!run) continue;
+        if (issue.code === "expired-worker-lease" && selected.has("recover-expired-lease") && run.status === "running" && run.leaseExpiresAt && run.leaseExpiresAt.getTime() < Date.now()) {
+          await this.store.transitionIngestionRun({ runId: run.id, from: ["running"], to: "retry_pending", error: { message: "Worker lease expired.", retryable: true } }); repaired.push(issue.code);
+        } else if ((issue.code === "accepted-not-started" && selected.has("queue-accepted")) || (issue.code === "retryable-failure" && selected.has("requeue-retryable"))) {
+          if (this.ingestQueue) {
+            const queueable = run.status === "failed" ? await this.store.transitionIngestionRun({ runId: run.id, from: ["failed"], to: "retry_pending" }) : run;
+            await this.ingestQueue.enqueueRun(queueable); repaired.push(issue.code);
+          }
+        }
+      }
+    }
+    return { mode: options.mode ?? "inspect", issues, repaired };
   }
 
   private assertServerEnvironment(): void {
@@ -469,6 +550,15 @@ export class MemoGrafter {
       throw new MemoGrafterError(`MemoGrafter ${field} must be a non-empty string.`, { code: "INPUT_INVALID", operation: field === "query" ? "context" : "analyze", retryable: false, context: { field } });
     }
     return value;
+  }
+
+  private validateAnalyzeInput(input: AnalyzeDetailedInput): { sessionId: string; messages: Message[]; tags?: string[]; idempotencyKey?: string } {
+    const sessionId = this.requireNonBlankString(input?.sessionId, "sessionId");
+    const userMessage = this.requireNonBlankString(input?.userMessage, "userMessage");
+    const assistantMessage = this.requireNonBlankString(input?.assistantMessage, "assistantMessage");
+    if (input.tags !== undefined && (!Array.isArray(input.tags) || input.tags.some((tag) => typeof tag !== "string"))) throw new MemoGrafterError("MemoGrafter analyze tags must be an array of strings.", { code: "INPUT_INVALID", operation: "analyze", retryable: false, context: { field: "tags" } });
+    const idempotencyKey = input.idempotencyKey === undefined ? undefined : this.requireNonBlankString(input.idempotencyKey, "idempotencyKey");
+    return { sessionId, messages: [{ role: "user", content: userMessage }, { role: "assistant", content: assistantMessage }], ...(input.tags ? { tags: input.tags } : {}), ...(idempotencyKey ? { idempotencyKey } : {}) };
   }
 
   private validateRetrieverOptions(options: RetrieverConfig): void {

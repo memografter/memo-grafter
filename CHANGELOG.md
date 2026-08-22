@@ -9,6 +9,8 @@ All notable changes to this project will be documented here.
 - Added typed public errors, warnings, safe serialization, and non-network provider readiness checks.
 - Added provider completion, extraction, and embedding response validation at public analysis and context boundaries.
 - Preserved specific provider error codes while attaching safe ingestion state metadata.
+- Added durable ingestion-run records, idempotent detailed analysis receipts, worker leases, reconciliation APIs and CLI inspection.
+- Added atomic required graph/cursor commits, configurable queue retry behavior, typed lifecycle events, and drain-aware shutdown reporting.
 
 ### Fixed
 

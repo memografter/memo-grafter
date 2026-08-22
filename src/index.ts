@@ -2,6 +2,8 @@ export { MemoGrafterAgent } from "./agents/MemoGrafterAgent.js";
 export { MemoGrafter } from "./core/MemoGrafter.js";
 export { MemoGrafterError, emitWarning, enrichMemoGrafterError, isMemoGrafterError } from "./diagnostics.js";
 export type { AdapterReadiness, IngestionFailureContext, MemoGrafterDiagnostics, MemoGrafterErrorCode, MemoGrafterErrorContext, MemoGrafterLogger, MemoGrafterOperation, MemoGrafterStage, MemoGrafterWarning, MemoGrafterWarningCode, ReadinessCheck, ReadinessResult } from "./diagnostics.js";
+export { MemoGrafterShutdownError } from "./ingestion/types.js";
+export type { AcceptIngestionRequest, AnalyzeDetailedInput, AnalyzeReceipt, IngestionEvent, IngestionEventType, IngestionKind, IngestionRequirements, IngestionRun, IngestionRunStatus, IngestionTransition, MemoGrafterCloseOptions, PreparedIngestion, ReconciliationIssue, ReconciliationIssueCode, ReconciliationOptions, ReconciliationReport } from "./ingestion/types.js";
 export { defineConfig, resolveMemoGrafterConfig } from "./config.js";
 export { ConflictDetectionPass, DecayScoringPass, MemoGrafterCrawler, VersioningPass } from "./maintenance/index.js";
 export { ConductorAgent } from "./agents/fleet/ConductorAgent.js";

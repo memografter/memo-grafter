@@ -24,6 +24,7 @@ if (!(await skipWithoutDatabase("core/database-init"))) {
     "mg_segments",
     "mg_sessions",
     "mg_session_ingest_state",
+    "mg_ingestion_runs",
     "mg_topic_edges",
     "mg_topic_nodes",
   ]);

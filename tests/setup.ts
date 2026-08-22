@@ -179,6 +179,7 @@ export async function cleanupDatabase(): Promise<void> {
   await sql`DELETE FROM mg_topic_nodes`;
   await sql`DELETE FROM mg_segments`;
   await sql`DELETE FROM mg_message_buffer`;
+  await sql`DELETE FROM mg_ingestion_runs`;
   await sql`DELETE FROM mg_session_ingest_state`;
   await sql`DELETE FROM mg_sessions`;
   await sql`DELETE FROM mg_fleet_agents`;

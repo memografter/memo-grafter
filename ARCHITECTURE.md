@@ -340,3 +340,8 @@ During normal ingestion, existing graph state is not cleared. New topic nodes an
 - **Cursor-safe delivery:** completed retries are no-ops, partial overlaps are trimmed, persisted gaps can be recovered, and missing gaps fail before cursor advancement.
 - **Optional recall cache:** recall can cache raw memory search results in Redis for a short bounded TTL without caching final prompt assembly.
 - **Grafting is explicit and traceable:** memory transfer copies selected topic nodes and active atomic memories into a target session, records graph edges, and stores provenance in `mg_graft_registry` instead of silently mixing sessions.
+# Durable ingestion boundary
+
+PostgreSQL-backed ingestion uses two phases. Preparation reads the immutable accepted message range, invokes providers, validates outputs, and constructs graph objects without graph writes. Commit locks the session and ingestion run, verifies the expected cursor, and atomically persists required segments, topics, memories, required edges, cursor advancement, and run completion. Semantic edges and telemetry remain best effort and can produce `completed_with_warnings`.
+
+`mg_ingestion_runs` is the durable authority for accepted, queued, running, retrying, completed, failed, cancelled, and abandoned work. Queue jobs carry only the stable run identity and range; workers reload messages from PostgreSQL, so retries cannot append the exchange again.
