@@ -1,6 +1,8 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type { MessageParam } from "@anthropic-ai/sdk/resources/messages";
 import type { LLMAdapter, Message } from "../core/types.js";
+import { MemoGrafterError, isMemoGrafterError, type AdapterReadiness } from "../diagnostics.js";
+import { validateCompletion } from "./validation.js";
 
 export class AnthropicLLMAdapter implements LLMAdapter {
   private clientPromise: Promise<Anthropic> | undefined;
@@ -31,17 +33,27 @@ export class AnthropicLLMAdapter implements LLMAdapter {
         messages: anthropicMessages,
       });
 
-      return response.content
+      return validateCompletion(response.content
         .filter((block) => block.type === "text")
         .map((block) => block.text)
-        .join("");
+        .join(""));
     } catch (error) {
-      if (isMissingAnthropicSdkError(error)) throw error;
-      throw new Error(
+      if (isMemoGrafterError(error)) throw error;
+      throw new MemoGrafterError(
         "Anthropic completion failed. Configure ANTHROPIC_API_KEY and verify the model and credentials.",
-        { cause: error },
+        { code: "PROVIDER_REQUEST_FAILED", operation: "ingest", stage: "provider-request", retryable: true, cause: error },
       );
     }
+  }
+
+  async validate(): Promise<AdapterReadiness> {
+    const checks: AdapterReadiness["checks"] = [];
+    try { await import("@anthropic-ai/sdk"); checks.push({ id: "adapter.llm.anthropic-sdk", status: "passed", message: "Anthropic SDK is installed." }); }
+    catch { checks.push({ id: "adapter.llm.anthropic-sdk", status: "failed", code: "PROVIDER_SDK_MISSING", message: missingAnthropicSdkMessage, help: "Install it with: npm install @anthropic-ai/sdk" }); }
+    checks.push(process.env.ANTHROPIC_API_KEY
+      ? { id: "adapter.llm.anthropic-key", status: "passed", message: "ANTHROPIC_API_KEY is configured." }
+      : { id: "adapter.llm.anthropic-key", status: "failed", code: "PROVIDER_CONFIGURATION_MISSING", message: "ANTHROPIC_API_KEY is not configured.", help: "Set ANTHROPIC_API_KEY before using the adapter." });
+    return { ready: checks.every((check) => check.status !== "failed"), checks };
   }
 
   private getClient(): Promise<Anthropic> {
@@ -64,14 +76,10 @@ async function loadAnthropicClient(): Promise<Anthropic> {
     return new AnthropicClient();
   } catch (error) {
     if (isModuleNotFound(error, "@anthropic-ai/sdk")) {
-      throw new Error(missingAnthropicSdkMessage, { cause: error });
+      throw new MemoGrafterError(missingAnthropicSdkMessage, { code: "PROVIDER_SDK_MISSING", operation: "readiness", stage: "provider-loading", retryable: false, context: { provider: "anthropic" }, cause: error });
     }
     throw error;
   }
-}
-
-function isMissingAnthropicSdkError(error: unknown): boolean {
-  return error instanceof Error && error.message === missingAnthropicSdkMessage;
 }
 
 function isModuleNotFound(error: unknown, packageName: string): boolean {

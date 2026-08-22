@@ -3,7 +3,8 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { MissingDatabaseConfigurationError } from "./database-errors.js";
 interface Message { role: "system" | "user" | "assistant"; content: string }
-interface LLMAdapter { complete(messages: Message[], system?: string): Promise<string> }
+interface AdapterReadiness { ready: boolean; checks: Array<{ id: string; status: "passed" | "warning" | "failed"; code?: string; message: string; help?: string }> }
+interface LLMAdapter { complete(messages: Message[], system?: string): Promise<string>; validate?(): Promise<AdapterReadiness> }
 
 export interface MemoGrafterCliConfig {
   llm?: LLMAdapter;
@@ -12,6 +13,7 @@ export interface MemoGrafterCliConfig {
   };
   embedder?: {
     embed(text: string): Promise<number[]>;
+    validate?(): Promise<AdapterReadiness>;
   };
   graph?: {
     topK?: number;

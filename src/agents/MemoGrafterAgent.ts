@@ -28,6 +28,8 @@ import { resolveMemoGrafterConfig } from "../config.js";
 import type { MemoGrafterConfigOverrides, MemoGrafterConfigSource } from "../config.js";
 import { buildInvocationPlan } from "../invocation/InvocationPlanner.js";
 import type { PlannedMemoryContext } from "../invocation/types.js";
+import { enrichMemoGrafterError, isMemoGrafterError, MemoGrafterError } from "../diagnostics.js";
+import { validateCompletion } from "../adapters/validation.js";
 
 export class MemoGrafterAgent {
   private readonly core: MemoGrafter;
@@ -85,7 +87,13 @@ export class MemoGrafterAgent {
         minSimilarity: this.recallMinSimilarity,
       }),
     });
-    const response = await this.core.llm.complete(plan.request.messages, plan.request.system);
+    let response: string;
+    try {
+      response = validateCompletion(await this.core.llm.complete(plan.request.messages, plan.request.system), "invoke");
+    } catch (error) {
+      if (isMemoGrafterError(error)) throw enrichMemoGrafterError(error, { operation: "invoke" });
+      throw new MemoGrafterError("Foreground generation failed.", { code: "PROVIDER_REQUEST_FAILED", operation: "invoke", stage: "provider-request", retryable: true, cause: error });
+    }
 
     this.history.push({ role: "user", content: userMessage });
     this.history.push({ role: "assistant", content: response });

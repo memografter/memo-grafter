@@ -317,10 +317,13 @@ export interface GraftByRelevanceOptions {
 
 export interface LLMAdapter {
   complete(messages: Message[], system?: string): Promise<string>;
+  validate?(): Promise<import("../diagnostics.js").AdapterReadiness>;
 }
 
 export interface EmbedAdapter {
   embed(text: string): Promise<number[]>;
+  validate?(): Promise<import("../diagnostics.js").AdapterReadiness>;
+  dimensions?: number;
 }
 
 export interface MemoGrafterDriftConfig {
@@ -422,4 +425,5 @@ export interface MemoGrafterConfig {
   inject?: MemoGrafterInjectConfig;
   queue?: MemoGrafterQueueConfig;
   cache?: MemoGrafterCacheConfig;
+  diagnostics?: import("../diagnostics.js").MemoGrafterDiagnostics;
 }

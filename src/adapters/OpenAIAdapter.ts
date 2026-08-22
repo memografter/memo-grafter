@@ -1,6 +1,8 @@
 import type OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import type { EmbedAdapter, LLMAdapter, Message } from "../core/types.js";
+import { MemoGrafterError, isMemoGrafterError, type AdapterReadiness } from "../diagnostics.js";
+import { validateCompletion, validateEmbedding } from "./validation.js";
 
 export interface OpenAILLMAdapterOptions {
   streaming?: boolean;
@@ -43,7 +45,7 @@ export class OpenAILLMAdapter implements LLMAdapter {
           await this.options.onChunk?.(content);
         }
 
-        return response;
+        return validateCompletion(response);
       }
 
       const response = await client.chat.completions.create({
@@ -51,15 +53,17 @@ export class OpenAILLMAdapter implements LLMAdapter {
         messages: openAiMessages,
       });
 
-      return response.choices[0]?.message.content ?? "";
+      return validateCompletion(response.choices[0]?.message.content);
     } catch (error) {
-      if (isMissingOpenAISdkError(error)) throw error;
-      throw new Error(
+      if (isMemoGrafterError(error)) throw error;
+      throw new MemoGrafterError(
         "OpenAI completion failed. Configure OPENAI_API_KEY and verify the model and credentials.",
-        { cause: error },
+        { code: "PROVIDER_REQUEST_FAILED", operation: "ingest", stage: "provider-request", retryable: true, cause: error },
       );
     }
   }
+
+  validate(): Promise<AdapterReadiness> { return validateOpenAI("llm"); }
 
   private getClient(): Promise<OpenAI> {
     if (this.clientPromise) return this.clientPromise;
@@ -75,7 +79,8 @@ export class OpenAILLMAdapter implements LLMAdapter {
 export class OpenAIEmbedAdapter implements EmbedAdapter {
   private clientPromise: Promise<OpenAI> | undefined;
 
-  constructor(private readonly model = "text-embedding-3-small") {}
+  readonly dimensions: number;
+  constructor(private readonly model = "text-embedding-3-small", dimensions = 1536) { this.dimensions = dimensions; }
 
   async embed(text: string): Promise<number[]> {
     try {
@@ -85,15 +90,17 @@ export class OpenAIEmbedAdapter implements EmbedAdapter {
         input: text,
       });
 
-      return response.data[0]?.embedding ?? [];
+      return validateEmbedding(response.data[0]?.embedding, this.dimensions);
     } catch (error) {
-      if (isMissingOpenAISdkError(error)) throw error;
-      throw new Error(
+      if (isMemoGrafterError(error)) throw error;
+      throw new MemoGrafterError(
         "OpenAI embedding failed. Configure OPENAI_API_KEY and verify the embedding model and credentials.",
-        { cause: error },
+        { code: "PROVIDER_REQUEST_FAILED", operation: "ingest", stage: "provider-request", retryable: true, cause: error },
       );
     }
   }
+
+  validate(): Promise<AdapterReadiness> { return validateOpenAI("embedder"); }
 
   private getClient(): Promise<OpenAI> {
     if (this.clientPromise) return this.clientPromise;
@@ -115,14 +122,20 @@ async function loadOpenAIClient(): Promise<OpenAI> {
     return new OpenAIClient();
   } catch (error) {
     if (isModuleNotFound(error, "openai")) {
-      throw new Error(missingOpenAISdkMessage, { cause: error });
+      throw new MemoGrafterError(missingOpenAISdkMessage, { code: "PROVIDER_SDK_MISSING", operation: "readiness", stage: "provider-loading", retryable: false, context: { provider: "openai" }, cause: error });
     }
     throw error;
   }
 }
 
-function isMissingOpenAISdkError(error: unknown): boolean {
-  return error instanceof Error && error.message === missingOpenAISdkMessage;
+async function validateOpenAI(adapter: string): Promise<AdapterReadiness> {
+  const checks: AdapterReadiness["checks"] = [];
+  try { await import("openai"); checks.push({ id: `adapter.${adapter}.openai-sdk`, status: "passed", message: "OpenAI SDK is installed." }); }
+  catch { checks.push({ id: `adapter.${adapter}.openai-sdk`, status: "failed", code: "PROVIDER_SDK_MISSING", message: missingOpenAISdkMessage, help: "Install it with: npm install openai" }); }
+  checks.push(process.env.OPENAI_API_KEY
+    ? { id: `adapter.${adapter}.openai-key`, status: "passed", message: "OPENAI_API_KEY is configured." }
+    : { id: `adapter.${adapter}.openai-key`, status: "failed", code: "PROVIDER_CONFIGURATION_MISSING", message: "OPENAI_API_KEY is not configured.", help: "Set OPENAI_API_KEY before using the adapter." });
+  return { ready: checks.every((check) => check.status !== "failed"), checks };
 }
 
 function isModuleNotFound(error: unknown, packageName: string): boolean {

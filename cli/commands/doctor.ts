@@ -123,6 +123,18 @@ async function runDoctorWithRedisPolicy(
       ["Run: npx memo-grafter init"],
     ));
 
+  for (const [kind, adapter] of [["llm", config?.llm], ["embedder", config?.embedder]] as const) {
+    if (!adapter?.validate) continue;
+    try {
+      const readiness = await adapter.validate();
+      for (const check of readiness.checks) {
+        results.push({ id: check.id, section: "Providers", label: check.message, status: check.status, ...(check.help ? { help: [check.help] } : {}), required: check.status === "failed" });
+      }
+    } catch {
+      results.push(failed(`adapter.${kind}.validation`, "Providers", `${kind === "llm" ? "LLM" : "Embedding"} adapter validation failed`));
+    }
+  }
+
   let connectionString: string | undefined;
   try {
     connectionString = await resolveConnectionString({

@@ -9,6 +9,7 @@ import type {
   MemoGrafterInjectConfig,
   MemoGrafterQueueConfig,
 } from "./core/types.js";
+import { MemoGrafterError } from "./diagnostics.js";
 
 export interface MemoGrafterProjectDatabaseConfig
   extends Omit<MemoGrafterDatabaseConfig, "connectionString"> {
@@ -37,6 +38,7 @@ export interface MemoGrafterConfigOverrides {
   inject?: Partial<MemoGrafterInjectConfig>;
   queue?: MemoGrafterQueueConfig | false;
   cache?: MemoGrafterCacheConfig | false;
+  diagnostics?: MemoGrafterConfig["diagnostics"];
 }
 
 export function defineConfig(config: MemoGrafterProjectConfig): MemoGrafterProjectConfig;
@@ -65,7 +67,9 @@ export async function resolveMemoGrafterConfig(
     problems.push("embedder is missing or invalid. Configure an embedder in mg.config.ts or pass an override.");
   }
   if (problems.length > 0) {
-    throw new Error(`Invalid MemoGrafter configuration:\n- ${problems.join("\n- ")}`);
+    throw new MemoGrafterError(`Invalid MemoGrafter configuration:\n- ${problems.join("\n- ")}`, {
+      code: "CONFIGURATION_INVALID", operation: "create", stage: "configuration", retryable: false,
+    });
   }
 
   const queue = overrides.queue === false ? undefined : overrides.queue ?? projectConfig.queue;
@@ -89,6 +93,8 @@ export async function resolveMemoGrafterConfig(
     ...(mergeOptional(projectConfig.inject, overrides.inject, "inject")),
     ...(queue !== undefined ? { queue } : {}),
     ...(cache !== undefined ? { cache } : {}),
+    ...((overrides.diagnostics ?? projectConfig.diagnostics) !== undefined
+      ? { diagnostics: overrides.diagnostics ?? projectConfig.diagnostics } : {}),
   };
 }
 

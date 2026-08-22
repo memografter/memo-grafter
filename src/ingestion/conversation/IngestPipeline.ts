@@ -5,6 +5,7 @@ import type {
   IngestPipelineOptions,
   LLMAdapter,
   MemoGrafterDriftConfig,
+  MemoGrafterConfig,
   Message,
   TopicNode,
 } from "../../core/types.js";
@@ -16,6 +17,8 @@ import { splitTextForIngestion } from "../../utils/text/splitTextForIngestion.js
 import { edgePairKey, findCurrentRunReentryEdges } from "../../utils/reentry/reentryEdges.js";
 import { SegmentProcessor } from "./SegmentProcessor.js";
 import { type DriftSegment, TopicDriftDetector } from "./TopicDriftDetector.js";
+import { enrichMemoGrafterError, isMemoGrafterError, MemoGrafterError } from "../../diagnostics.js";
+import { validateEmbedding } from "../../adapters/validation.js";
 
 const INGEST_OVERLAP_MESSAGES = 6;
 const INCREMENTAL_SEMANTIC_THRESHOLD = 0.6;
@@ -44,12 +47,14 @@ export class IngestPipeline {
       reentryDetection?: boolean;
       reentryThreshold?: number;
       adaptiveSensitivity?: MemoGrafterDriftConfig["adaptiveSensitivity"];
+      diagnostics?: MemoGrafterConfig["diagnostics"];
     },
   ) {
     this.baseDriftThreshold = resolveDriftThreshold(config);
     this.segmentProcessor = new SegmentProcessor(store, llm, embedder, {
       topK: config.topK,
       semanticThreshold: 0.6,
+      ...(config.diagnostics !== undefined ? { diagnostics: config.diagnostics } : {}),
     });
   }
 
@@ -109,7 +114,11 @@ export class IngestPipeline {
     startIndex: number,
     options: IngestPipelineOptions = {},
   ): Promise<TopicNode[]> {
-    return this.runIncremental(messages, sessionId, startIndex, options, undefined, true);
+    return this.runIncremental(messages, sessionId, startIndex, options, undefined, true).catch((error: unknown) => {
+      const context = { sessionId, messageRange: [startIndex, startIndex + messages.length - 1] as [number, number], messagesPersisted: true, graphProcessed: false, cursorAdvanced: false, retrySafe: true };
+      if (isMemoGrafterError(error)) throw enrichMemoGrafterError(error, { operation: "ingest", context });
+      throw new MemoGrafterError(error instanceof Error ? error.message : "MemoGrafter ingestion failed.", { code: "INGESTION_FAILED", operation: "ingest", retryable: true, context, cause: error });
+    });
   }
 
   async runIncremental(
@@ -330,7 +339,7 @@ export class IngestPipeline {
 
   private async embedMessage(message: Message): Promise<number[]> {
     const content = normalizeText(message.content) ?? message.content;
-    return this.embedder.embed(content);
+    return validateEmbedding(await this.embedder.embed(content), this.embedder.dimensions);
   }
 
   private async createDriftDetector(sessionId: string, minSegmentMessages?: number): Promise<TopicDriftDetector> {

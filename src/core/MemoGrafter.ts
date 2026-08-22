@@ -34,6 +34,7 @@ import type {
 import { composePinnedTopicContext } from "../prompts/pinnedTopicPrompt.js";
 import { buildFactRetrievalPrompt, formatFactBlock } from "../prompts/factRetrievalPrompt.js";
 import { countApproxTokens } from "../utils/text/tokenCount.js";
+import { MemoGrafterError, emitWarning, enrichMemoGrafterError, isMemoGrafterError, type MemoGrafterDiagnostics, type ReadinessResult } from "../diagnostics.js";
 
 export class MemoGrafter {
   readonly llm: LLMAdapter;
@@ -46,6 +47,8 @@ export class MemoGrafter {
   private readonly graphTopK: number;
   private readonly graphHopDepth: number;
   private readonly pinnedTokenBudget: number;
+  private readonly diagnostics: MemoGrafterDiagnostics | undefined;
+  private storageInitialized = false;
 
   constructor(config: MemoGrafterConfig) {
     this.assertServerEnvironment();
@@ -64,6 +67,7 @@ export class MemoGrafter {
     const bufferSize = config.inject?.bufferSize ?? 1;
     const tokenBudget = config.inject?.tokenBudget ?? 4000;
     this.pinnedTokenBudget = tokenBudget;
+    this.diagnostics = config.diagnostics;
 
     this.llm = config.llm;
     this.embedder = config.embedder;
@@ -79,6 +83,7 @@ export class MemoGrafter {
       })
       : null;
     this.recallCache?.on("error", (error: Error) => {
+      emitWarning(this.diagnostics, { code: "CACHE_UNAVAILABLE", operation: "context", context: {}, cause: error });
       console.warn("MemoGrafter recall cache Redis warning:", error.message);
     });
     const ingestConfig = {
@@ -96,6 +101,7 @@ export class MemoGrafter {
       ...(reentryDetection !== undefined ? { reentryDetection } : {}),
       ...(reentryThreshold !== undefined ? { reentryThreshold } : {}),
       ...(adaptiveSensitivity !== undefined ? { adaptiveSensitivity } : {}),
+      ...(config.diagnostics !== undefined ? { diagnostics: config.diagnostics } : {}),
     });
     this.grafterPipeline = new GrafterPipeline(this.store, {
       hopDepth,
@@ -109,20 +115,69 @@ export class MemoGrafter {
     config: MemoGrafterConfigSource,
     overrides: MemoGrafterConfigOverrides = {},
   ): Promise<MemoGrafter> {
-    const resolvedConfig = await resolveMemoGrafterConfig(config, overrides);
-    const memo = new MemoGrafter(resolvedConfig);
-
+    let memo: MemoGrafter | undefined;
     try {
+      let resolvedConfig: MemoGrafterConfig;
+      try { resolvedConfig = await resolveMemoGrafterConfig(config, overrides); }
+      catch (error) {
+        if (isMemoGrafterError(error)) throw error;
+        throw new MemoGrafterError("MemoGrafter configuration could not be resolved.", { code: "CONFIGURATION_INVALID", operation: "create", stage: "configuration", retryable: false, cause: error });
+      }
+      memo = new MemoGrafter(resolvedConfig);
+      const readiness = await memo.checkReadiness();
+      const failed = readiness.checks.find((check) => check.status === "failed");
+      if (failed) {
+        throw new MemoGrafterError(failed.message, {
+          code: failed.code ?? "CONFIGURATION_INVALID", operation: "create", stage: "configuration",
+          context: { checkId: failed.id },
+        });
+      }
       await memo.initialize();
       return memo;
     } catch (error) {
-      await memo.close().catch(() => undefined);
+      await memo?.close().catch(() => undefined);
       throw error;
     }
   }
 
-  initialize(): Promise<void> {
-    return this.store.initialize();
+  async initialize(): Promise<void> {
+    try {
+      await this.store.initialize();
+      this.storageInitialized = true;
+    } catch (error) {
+      if (isMemoGrafterError(error)) throw error;
+      throw new MemoGrafterError("MemoGrafter storage initialization failed.", {
+        code: "STORAGE_INITIALIZATION_FAILED", operation: "storage", stage: "storage-initialization", retryable: true, cause: error,
+      });
+    }
+  }
+
+  async checkReadiness(): Promise<ReadinessResult> {
+    const checks: ReadinessResult["checks"] = [
+      { id: "runtime.node", status: "passed", message: `Node.js ${process.versions.node} is available.` },
+      { id: "configuration.database", status: "passed", message: "Database configuration is present." },
+      { id: "adapter.llm", status: typeof this.llm.complete === "function" ? "passed" : "failed", ...(typeof this.llm.complete === "function" ? {} : { code: "ADAPTER_INVALID" as const }), message: typeof this.llm.complete === "function" ? "LLM adapter is valid." : "LLM adapter is invalid." },
+      { id: "adapter.embedder", status: typeof this.embedder.embed === "function" ? "passed" : "failed", ...(typeof this.embedder.embed === "function" ? {} : { code: "ADAPTER_INVALID" as const }), message: typeof this.embedder.embed === "function" ? "Embedding adapter is valid." : "Embedding adapter is invalid." },
+    ];
+    for (const adapter of [this.llm, this.embedder]) {
+      if (adapter.validate) {
+        try { checks.push(...(await adapter.validate()).checks); }
+        catch (error) {
+          checks.push({ id: adapter === this.llm ? "adapter.llm.validation" : "adapter.embedder.validation", status: "failed", code: isMemoGrafterError(error) ? error.code : "ADAPTER_INVALID", message: error instanceof Error ? error.message : "Adapter validation failed." });
+        }
+      }
+    }
+    if (this.embedder.dimensions !== undefined) {
+      checks.push(this.embedder.dimensions === 1536
+        ? { id: "embedding.dimensions", status: "passed", message: "Embedding dimensions match the 1536-dimensional storage schema." }
+        : { id: "embedding.dimensions", status: "failed", code: "CONFIGURATION_INVALID", message: `Embedding dimensions (${this.embedder.dimensions}) do not match the 1536-dimensional storage schema.`, help: "Configure the embedding adapter to return 1536 dimensions." });
+    } else {
+      checks.push({ id: "embedding.dimensions", status: "warning", message: "Embedding dimensions are not declared; provider responses will be validated at runtime." });
+    }
+    checks.push(this.storageInitialized
+      ? { id: "storage.initialization", status: "passed", message: "Storage is initialized." }
+      : { id: "storage.initialization", status: "warning", message: "Storage has not been initialized yet." });
+    return { ready: checks.every((check) => check.status !== "failed"), checks };
   }
 
   ingest(messages: Message[], sessionId: string, options: IngestOptions = {}): Promise<TopicNode[]> {
@@ -148,7 +203,7 @@ export class MemoGrafter {
     const userMessage = this.requireNonBlankString(input?.userMessage, "userMessage");
     const assistantMessage = this.requireNonBlankString(input?.assistantMessage, "assistantMessage");
     if (input.tags !== undefined && (!Array.isArray(input.tags) || input.tags.some((tag) => typeof tag !== "string"))) {
-      throw new TypeError("MemoGrafter analyze tags must be an array of strings.");
+      throw new MemoGrafterError("MemoGrafter analyze tags must be an array of strings.", { code: "INPUT_INVALID", operation: "analyze", retryable: false, context: { field: "tags" } });
     }
 
     const messages: Message[] = [
@@ -157,10 +212,13 @@ export class MemoGrafter {
     ];
     const options: IngestOptions = input.tags ? { tags: input.tags } : {};
 
-    if (this.ingestQueue) {
-      return this.ingestQueue.enqueueAppend(messages, sessionId, options).then(() => []);
-    }
-    return this.ingestPipeline.append(messages, sessionId, options);
+    const analysis = this.ingestQueue
+      ? this.ingestQueue.enqueueAppend(messages, sessionId, options).then(() => [] as TopicNode[])
+      : this.ingestPipeline.append(messages, sessionId, options);
+    return analysis.catch((error: unknown) => {
+      if (isMemoGrafterError(error)) throw enrichMemoGrafterError(error, { operation: "analyze" });
+      throw new MemoGrafterError("MemoGrafter analysis failed.", { code: "INGESTION_FAILED", operation: "analyze", retryable: true, context: { sessionId, messageRange: [0, 1], retrySafe: false }, cause: error });
+    });
   }
 
   /** Retrieve fresh graph context for an external LLM call. */
@@ -170,11 +228,14 @@ export class MemoGrafter {
     const { sessionId: _sessionId, query: _query, ...options } = input;
     this.validateRetrieverOptions(options);
 
-    return this.buildContext(sessionId, query, options);
+    return this.buildContext(sessionId, query, options).catch((error: unknown) => {
+      if (isMemoGrafterError(error)) throw enrichMemoGrafterError(error, { operation: "context" });
+      throw new MemoGrafterError("MemoGrafter context retrieval failed.", { code: "CONTEXT_FAILED", operation: "context", retryable: true, context: { sessionId }, cause: error });
+    });
   }
 
   private async buildContext(sessionId: string, query: string, options: RetrieverConfig): Promise<RetrievalResult> {
-    const pipeline = new RetrieverPipeline(this.store, this.embedder, options, null);
+    const pipeline = new RetrieverPipeline(this.store, this.embedder, options, null, this.diagnostics);
     const recalled = await pipeline.run(query, sessionId);
     return this.combinePinnedContext(sessionId, recalled);
   }
@@ -399,26 +460,26 @@ export class MemoGrafter {
     };
 
     if (typeof globalScope.window !== "undefined" && typeof globalScope.document !== "undefined") {
-      throw new Error("MemoGrafter requires a Node.js server environment and cannot run in the browser.");
+      throw new MemoGrafterError("MemoGrafter requires a Node.js server environment and cannot run in the browser.", { code: "RUNTIME_UNSUPPORTED", operation: "create", retryable: false });
     }
   }
 
   private requireNonBlankString(value: unknown, field: string): string {
     if (typeof value !== "string" || value.trim().length === 0) {
-      throw new TypeError(`MemoGrafter ${field} must be a non-empty string.`);
+      throw new MemoGrafterError(`MemoGrafter ${field} must be a non-empty string.`, { code: "INPUT_INVALID", operation: field === "query" ? "context" : "analyze", retryable: false, context: { field } });
     }
     return value;
   }
 
   private validateRetrieverOptions(options: RetrieverConfig): void {
     if (options.limit !== undefined && (!Number.isInteger(options.limit) || options.limit <= 0)) {
-      throw new RangeError("MemoGrafter context limit must be a positive integer.");
+      throw new MemoGrafterError("MemoGrafter context limit must be a positive integer.", { code: "INPUT_INVALID", operation: "context", retryable: false, context: { field: "limit" } });
     }
     if (options.tokenBudget !== undefined && (!Number.isInteger(options.tokenBudget) || options.tokenBudget <= 0)) {
-      throw new RangeError("MemoGrafter context tokenBudget must be a positive integer.");
+      throw new MemoGrafterError("MemoGrafter context tokenBudget must be a positive integer.", { code: "INPUT_INVALID", operation: "context", retryable: false, context: { field: "tokenBudget" } });
     }
     if (options.minSimilarity !== undefined && (!Number.isFinite(options.minSimilarity) || options.minSimilarity < 0 || options.minSimilarity > 1)) {
-      throw new RangeError("MemoGrafter context minSimilarity must be between 0 and 1.");
+      throw new MemoGrafterError("MemoGrafter context minSimilarity must be between 0 and 1.", { code: "INPUT_INVALID", operation: "context", retryable: false, context: { field: "minSimilarity" } });
     }
   }
 
@@ -441,6 +502,7 @@ export class MemoGrafter {
         await this.recallCache.del(...keys);
       }
     } catch (error: unknown) {
+      emitWarning(this.diagnostics, { code: "CACHE_UNAVAILABLE", operation: "context", context: {}, cause: error });
       console.warn("MemoGrafter recall cache invalidation warning:", error);
     }
   }

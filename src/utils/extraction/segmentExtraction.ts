@@ -3,18 +3,28 @@ import type {
   MemoryType,
   SegmentExtractionResult,
 } from "../../core/types.js";
+import { MemoGrafterError, emitWarning, type MemoGrafterDiagnostics } from "../../diagnostics.js";
 
-export function parseSegmentExtraction(raw: string): SegmentExtractionResult {
+export function parseSegmentExtraction(raw: string, diagnostics?: MemoGrafterDiagnostics): SegmentExtractionResult {
   try {
-    const parsed = JSON.parse(raw.trim()) as Record<string, unknown>;
+    const parsedValue: unknown = JSON.parse(raw.trim());
+    if (!parsedValue || typeof parsedValue !== "object" || Array.isArray(parsedValue)) throw new Error("Expected an object.");
+    const parsed = parsedValue as Record<string, unknown>;
+    if (!stringValue(parsed.label) || !stringValue(parsed.user_intent) || !stringValue(parsed.outcome)) {
+      throw new Error("Required extraction fields are missing.");
+    }
     return {
-      label: stringValue(parsed.label) || "Unknown",
+      label: stringValue(parsed.label),
       userIntent: stringValue(parsed.user_intent),
       outcome: stringValue(parsed.outcome),
       open: nullableStringValue(parsed.open),
       memories: parseExtractedMemories(parsed.memories),
     };
   } catch (error) {
+    if (raw.trim().startsWith("{") || raw.trim().startsWith("[")) {
+      throw new MemoGrafterError("The extraction response did not match the required schema.", { code: "EXTRACTION_RESPONSE_INVALID", operation: "analyze", stage: "topic-extraction", retryable: true, cause: error });
+    }
+    emitWarning(diagnostics, { code: "EXTRACTION_FALLBACK_USED", operation: "analyze", stage: "topic-extraction", cause: error });
     console.warn("SegmentProcessor extraction JSON parse failed; falling back to legacy parsing.", error);
   }
 
