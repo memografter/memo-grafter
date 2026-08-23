@@ -30,7 +30,12 @@ interface SchemaMetadata {
 export interface DoctorOptions {
   cwd?: string;
   db?: string;
+  ingestion?: boolean;
+  sessionId?: string;
+  json?: boolean;
 }
+
+interface IngestionIssue { code: string; severity: "warning" | "error"; sessionId: string; message: string; repairable: boolean }
 
 export interface DoctorDependencies {
   createDatabaseClient(connectionString: string): DatabaseClient;
@@ -48,6 +53,7 @@ export interface DoctorDependencies {
   loadSchemaMetadata(): Promise<SchemaMetadata>;
   checkRedis(connectionString: string): Promise<void>;
   getMemoGrafterVersion(): string;
+  inspectIngestion?(connectionString: string, sessionId?: string): Promise<IngestionIssue[]>;
 }
 
 const defaultDependencies: DoctorDependencies = {
@@ -78,6 +84,13 @@ const defaultDependencies: DoctorDependencies = {
     }
   },
   getMemoGrafterVersion,
+  async inspectIngestion(connectionString, sessionId) {
+    const entry = "memo-grafter/store";
+    const { PostgresGraphStore } = await import(entry);
+    const store = new PostgresGraphStore(connectionString);
+    try { return await store.inspectIngestionConsistency(sessionId); }
+    finally { await store.close(); }
+  },
 };
 
 export async function runDoctor(
@@ -206,6 +219,23 @@ async function runDoctorWithRedisPolicy(
       }
     }
     await sql.end().catch(() => undefined);
+    if (options.ingestion && connected) {
+      try {
+        const issues = await dependencies.inspectIngestion?.(connectionString, options.sessionId) ?? [];
+        results.push(issues.length === 0
+          ? passed("ingestion.health", "Ingestion", "Ingestion state is consistent")
+          : {
+            id: "ingestion.health", section: "Ingestion",
+            label: `${issues.length} ingestion consistency issue${issues.length === 1 ? "" : "s"} found`,
+            status: issues.some((issue) => issue.severity === "error") ? "failed" : "warning",
+            message: issues.map((issue) => `${issue.code} [${issue.sessionId}]: ${issue.message}`).join("\n"),
+            help: ["Use the runtime reconcileSession() API for an explicit, application-controlled repair."],
+            required: true,
+          });
+      } catch (error) {
+        results.push(failed("ingestion.health", "Ingestion", "Ingestion health could not be inspected", [error instanceof Error ? error.message : "Unknown inspection error"]));
+      }
+    }
   } else {
     results.push(skipped("postgres.connection", "PostgreSQL", "PostgreSQL check skipped"));
     appendSkippedDatabaseResults(results);
@@ -282,7 +312,10 @@ async function runDoctorWithRedisPolicy(
   }
 
   const exitCode = results.some((result) => result.required && result.status === "failed") ? 1 : 0;
-  return { exitCode, results, output: renderDoctor(results) };
+  const output = options.json
+    ? JSON.stringify({ ready: exitCode === 0, checks: results.map(({ id, section, label, status, message, help, required }) => ({ id, section, label, status, ...(message ? { message } : {}), ...(help ? { help } : {}), required })) }, null, 2)
+    : renderDoctor(results);
+  return { exitCode, results, output };
 }
 
 function redisSuccessLabel(

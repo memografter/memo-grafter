@@ -291,6 +291,15 @@ export interface RetrievalResult {
   pinnedContextTruncated?: boolean;
   /** Budget reserved separately for pinned-topic context. */
   pinnedTokenBudget?: number;
+  /** True when an optional subsystem failed but retrieval still succeeded. */
+  degraded?: boolean;
+  /** Structured, non-fatal problems encountered while producing this result. */
+  warnings?: import("../diagnostics.js").MemoGrafterWarning[];
+}
+
+export interface MemoGrafterOperationOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
 }
 
 export interface PinnedContextResult extends InjectionResult {
@@ -316,12 +325,12 @@ export interface GraftByRelevanceOptions {
 }
 
 export interface LLMAdapter {
-  complete(messages: Message[], system?: string): Promise<string>;
+  complete(messages: Message[], system?: string, options?: MemoGrafterOperationOptions): Promise<string>;
   validate?(): Promise<import("../diagnostics.js").AdapterReadiness>;
 }
 
 export interface EmbedAdapter {
-  embed(text: string): Promise<number[]>;
+  embed(text: string, options?: MemoGrafterOperationOptions): Promise<number[]>;
   validate?(): Promise<import("../diagnostics.js").AdapterReadiness>;
   dimensions?: number;
 }

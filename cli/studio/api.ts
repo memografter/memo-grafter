@@ -20,6 +20,9 @@ export interface StudioApiStore {
   getGraftRegistry(sessionId: string): Promise<StudioGraftRegistryEntry[]>;
   graftTopics(request: StudioGraftTopicsRequest): Promise<StudioGraftTopicsResult>;
   removeGraftFromSession(targetSessionId: string, nodeId: string): Promise<StudioGraftRegistryEntry | null>;
+  inspectIngestionConsistency?(sessionId?: string): Promise<Array<{ code: string; severity: "warning" | "error"; sessionId: string; message: string; repairable: boolean }>>;
+  listIngestionRuns?(sessionId?: string): Promise<Array<{ id: string; status: string; startIndex: number; endIndex: number; lastErrorCode?: string; retryable?: boolean; updatedAt: Date }>>;
+  getSessionIngestState?(sessionId: string): Promise<{ lastIngestedMessageIndex: number } | null>;
 }
 
 interface StudioGraftTopic {
@@ -179,6 +182,12 @@ export async function handleStudioApiRequest(
       return;
     }
 
+    if (collection === "ingestion-health" && route.segments.length === 3) {
+      if (method !== "GET") { sendMethodNotAllowed(response, ["GET"]); return; }
+      await sendIngestionHealth(response, context, sessionId);
+      return;
+    }
+
     if ((collection === "preview" || collection === "invocation-preview") && route.segments.length === 3) {
       if (method !== "POST") {
         sendMethodNotAllowed(response, ["POST"]);
@@ -261,6 +270,33 @@ export async function handleStudioApiRequest(
       message: error instanceof Error ? error.message : String(error),
     });
   }
+}
+
+async function sendIngestionHealth(response: ServerResponse, context: StudioApiContext, sessionId: string): Promise<void> {
+  if (!await context.repository.sessionExists(sessionId)) {
+    sendJson(response, 404, { error: `Session '${sessionId}' was not found.` });
+    return;
+  }
+  if (!context.store.inspectIngestionConsistency || !context.store.listIngestionRuns || !context.store.getSessionIngestState) {
+    sendJson(response, 200, { sessionId, available: false, status: "unavailable", issues: [] });
+    return;
+  }
+  const [issues, runs, ingestState, messages] = await Promise.all([
+    context.store.inspectIngestionConsistency(sessionId),
+    context.store.listIngestionRuns(sessionId),
+    context.store.getSessionIngestState(sessionId),
+    context.store.getMessagesBySession(sessionId),
+  ]);
+  const lastRun = [...runs].sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())[0];
+  const bufferedThrough = messages.length - 1;
+  const processedThrough = ingestState?.lastIngestedMessageIndex ?? -1;
+  sendJson(response, 200, {
+    sessionId, available: true,
+    status: issues.some((issue) => issue.severity === "error") ? "failed" : issues.length ? "warning" : runs.some((run) => ["accepted", "queued", "running", "retry_pending"].includes(run.status)) ? "processing" : "healthy",
+    bufferedThrough, processedThrough, pendingMessages: Math.max(0, bufferedThrough - processedThrough),
+    lastError: lastRun?.lastErrorCode ?? null, retryable: lastRun?.retryable ?? null,
+    issues,
+  });
 }
 
 async function updateSession(

@@ -4,6 +4,8 @@ import type {
   CrawlerPassReport,
   CrawlerReport,
 } from "./types.js";
+import type { MemoGrafterOperationOptions } from "../core/types.js";
+import { createOperationControl } from "../utils/operationControl.js";
 
 const DEFAULT_INTERVAL_MS = 60_000;
 
@@ -43,7 +45,10 @@ export class MemoGrafterCrawler {
     this.isRunning = false;
   }
 
-  async runOnce(): Promise<CrawlerReport> {
+  async runOnce(operationOptions?: MemoGrafterOperationOptions): Promise<CrawlerReport> {
+    const control = createOperationControl(operationOptions, "maintenance", "graph-processing");
+    control.throwIfAborted();
+    try {
     const startedAtMs = Date.now();
     const startedAt = new Date(startedAtMs).toISOString();
     const passes: CrawlerPassReport[] = [];
@@ -52,7 +57,9 @@ export class MemoGrafterCrawler {
       : {};
 
     for (const pass of this.config.passes ?? []) {
+      control.throwIfAborted();
       const passReport = await this.runPass(pass.name, () => pass.run(context));
+      control.throwIfAborted();
       passes.push(passReport);
 
       if (!passReport.ok && this.config.stopOnPassError) {
@@ -68,6 +75,7 @@ export class MemoGrafterCrawler {
       passes,
       ok: passes.every((pass) => pass.ok),
     };
+    } finally { control.dispose(); }
   }
 
   private async runScheduledTick(): Promise<void> {

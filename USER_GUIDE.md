@@ -1899,3 +1899,17 @@ Common `MemoGrafterAgent` methods:
 - `absorbFromAgent(sourceAgent, options)`: select and copy memory from another agent.
 - `removeGraft(nodeId)`: remove a registered graft node from the current session.
 - `close()`: close database and queue resources.
+# Ingestion health and operation control
+
+Use `npx memo-grafter doctor --ingestion` to inspect all durable-ingestion state, or add `--session <id>` to scope the check. Add `--json` for stable machine-readable check IDs and statuses. Doctor never repairs data; applications must explicitly choose repairs through `memo.reconcileSession(...)`.
+
+Selected long-running APIs accept an optional second or third operation-options argument:
+
+```ts
+const result = await memo.context(
+  { sessionId, query, cache: { ttlSeconds: 90 } },
+  { signal: request.signal, timeoutMs: 5_000 },
+);
+```
+
+Successful retrieval can be degraded when only the optional cache failed. Check `result.degraded` and `result.warnings`; facts and the existing successful return fields are unchanged.

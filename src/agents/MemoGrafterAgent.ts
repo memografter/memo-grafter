@@ -14,6 +14,7 @@ import type {
   MemoryNode,
   MemoGrafterConfig,
   Message,
+  MemoGrafterOperationOptions,
   RememberOptions,
   RetrievalResult,
   RetrieverConfig,
@@ -30,6 +31,7 @@ import { buildInvocationPlan } from "../invocation/InvocationPlanner.js";
 import type { PlannedMemoryContext } from "../invocation/types.js";
 import { enrichMemoGrafterError, isMemoGrafterError, MemoGrafterError } from "../diagnostics.js";
 import { validateCompletion } from "../adapters/validation.js";
+import { createOperationControl } from "../utils/operationControl.js";
 
 export class MemoGrafterAgent {
   private readonly core: MemoGrafter;
@@ -75,7 +77,10 @@ export class MemoGrafterAgent {
     return this.core.initialize();
   }
 
-  async invoke(userMessage: string): Promise<string> {
+  async invoke(userMessage: string, operationOptions?: MemoGrafterOperationOptions): Promise<string> {
+    const control = createOperationControl(operationOptions, "invoke", "provider-request");
+    control.throwIfAborted();
+    try {
     const plan = await buildInvocationPlan(this.sessionId, userMessage, {
       profile: "memo-grafter-agent",
       history: this.history,
@@ -89,8 +94,10 @@ export class MemoGrafterAgent {
     });
     let response: string;
     try {
-      response = validateCompletion(await this.core.llm.complete(plan.request.messages, plan.request.system), "invoke");
+      response = validateCompletion(await this.core.llm.complete(plan.request.messages, plan.request.system, { signal: control.signal }), "invoke");
+      control.throwIfAborted();
     } catch (error) {
+      control.throwIfAborted();
       if (isMemoGrafterError(error)) throw enrichMemoGrafterError(error, { operation: "invoke" });
       throw new MemoGrafterError("Foreground generation failed.", { code: "PROVIDER_REQUEST_FAILED", operation: "invoke", stage: "provider-request", retryable: true, cause: error });
     }
@@ -102,6 +109,7 @@ export class MemoGrafterAgent {
     this.enqueueBackgroundIngest();
 
     return response;
+    } finally { control.dispose(); }
   }
 
   getHistory(): Message[] {

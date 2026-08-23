@@ -1666,6 +1666,7 @@ export function renderStudioHtml(state: StudioFrontendState): string {
           sessionTitleDraft: "",
           sessionTitleSaving: false,
           selectedSessionId: null,
+          ingestionHealth: null,
           activeTab: "graph",
           graph: null,
           tables: null,
@@ -1829,6 +1830,7 @@ export function renderStudioHtml(state: StudioFrontendState): string {
           const preserveSelection = Boolean(options && options.preserveSelection && state.selectedSessionId === sessionId);
           const selectedGraphNodeId = preserveSelection ? state.selectedGraphNodeId : null;
           state.selectedSessionId = sessionId;
+          state.ingestionHealth = null;
           state.activeTab = "graph";
           if (!preserveSelection) {
             state.graph = null;
@@ -1849,7 +1851,12 @@ export function renderStudioHtml(state: StudioFrontendState): string {
           renderWorkspace();
           renderHeader();
           try {
-            state.graph = await fetchJson("/api/sessions/" + encodeURIComponent(sessionId) + "/graph");
+            const results = await Promise.all([
+              fetchJson("/api/sessions/" + encodeURIComponent(sessionId) + "/graph"),
+              fetchJson("/api/sessions/" + encodeURIComponent(sessionId) + "/ingestion-health")
+            ]);
+            state.graph = results[0];
+            state.ingestionHealth = results[1];
             state.tabs.graph.loadedAt = new Date().toISOString();
             return true;
           } catch (error) {
@@ -2124,9 +2131,12 @@ export function renderStudioHtml(state: StudioFrontendState): string {
           const session = selectedSession();
           const title = session ? sessionDisplayLabel(session) : "Session " + state.selectedSessionId;
           renderTitleEditor(title);
+          const health = state.ingestionHealth && state.ingestionHealth.available
+            ? " · Ingestion: " + state.ingestionHealth.status + " · Pending: " + numberText(state.ingestionHealth.pendingMessages)
+            : "";
           elements.pageSubtitle.textContent = activeTabState.loading
             ? "Loading " + tabLabel(state.activeTab).toLowerCase() + " data..."
-            : state.selectedSessionId;
+            : state.selectedSessionId + health;
         }
 
         function renderTitleEditor(title) {

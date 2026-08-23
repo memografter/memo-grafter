@@ -345,3 +345,18 @@ During normal ingestion, existing graph state is not cleared. New topic nodes an
 PostgreSQL-backed ingestion uses two phases. Preparation reads the immutable accepted message range, invokes providers, validates outputs, and constructs graph objects without graph writes. Commit locks the session and ingestion run, verifies the expected cursor, and atomically persists required segments, topics, memories, required edges, cursor advancement, and run completion. Semantic edges and telemetry remain best effort and can produce `completed_with_warnings`.
 
 `mg_ingestion_runs` is the durable authority for accepted, queued, running, retrying, completed, failed, cancelled, and abandoned work. Queue jobs carry only the stable run identity and range; workers reload messages from PostgreSQL, so retries cannot append the exchange again.
+# Resilience and ingestion transparency
+
+Long-running public boundaries use the shared `MemoGrafterOperationOptions` contract (`signal` and `timeoutMs`). Explicit cancellation is reported as `OPERATION_ABORTED` and is not automatically retryable; a configured deadline is reported as retryable `OPERATION_TIMEOUT`. Provider errors remain specific when no cancellation or framework deadline occurred.
+
+Optional cache failures do not fail retrieval. They produce a successful `RetrievalResult` with `degraded: true` and structured `warnings`. Durable ingestion, database writes, and provider/embedder failures remain fatal.
+
+| Module | Fatal | Degraded | Cancellation / timeout | Retry |
+| --- | --- | --- | --- | --- |
+| Retrieval | database, embedder | cache | supported | caller-controlled |
+| Ingestion | required provider and database work | best-effort enrichment | durable acceptance is preserved | durable run policy |
+| Maintenance | required pass work | pass report when configured | supported between passes | caller-controlled |
+| CLI doctor | invalid configuration, required checks | optional services | process-level | none |
+| Studio | API and storage | unavailable health metadata | request lifecycle | none |
+
+This phase adds no database migration. Deployments that already applied durable-ingestion migration 007 remain compatible. Sessions created before run tracking continue to be classified by the Phase 2 consistency inspector. `doctor --ingestion` is read-only; repairs remain explicit runtime calls through `reconcileSession()` or `reconcilePendingIngestion()`. Rolling back this code does not require a schema rollback, although older application code will not display the new error metadata or health view.

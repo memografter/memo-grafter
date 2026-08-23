@@ -6,7 +6,7 @@
 
 > `MemoGrafter.create()` performs non-network provider readiness checks before storage initialization. Use `await memo.checkReadiness()` for structured checks, inspect `MemoGrafterError.code` and `operation` at public boundaries, and subscribe to best-effort warnings with `config.diagnostics.onWarning`.
 
-Durable ingestion is enabled by the PostgreSQL store after migration. `analyze()` keeps its existing return value, while `analyzeDetailed()` returns an ingestion receipt with the durable run ID, message range, queue information, warnings, and graph completion state. Accepted messages and their run record are committed together; provider preparation performs no graph writes; required graph state, cursor advancement, and run completion commit in one transaction. Use `memo.reconcileSession()` or `memo-grafter reconcile` for read-only inspection, and select explicit repair actions when needed.
+Durable ingestion is enabled by the PostgreSQL store after migration. `analyze()` keeps its existing return value, while `analyzeDetailed()` returns an ingestion receipt with the durable run ID, message range, queue information, warnings, and graph completion state. Accepted messages and their run record are committed together; provider preparation performs no graph writes; required graph state, cursor advancement, and run completion commit in one transaction. Use `memo-grafter doctor --ingestion` for read-only inspection. Applications can use `memo.reconcileSession()` or `memo.reconcilePendingIngestion()` when they explicitly choose to perform repairs.
 
 <p align="center">
   Lifecycle-managed memory for TypeScript AI agents.

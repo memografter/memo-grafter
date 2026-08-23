@@ -1,6 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type { MessageParam } from "@anthropic-ai/sdk/resources/messages";
-import type { LLMAdapter, Message } from "../core/types.js";
+import type { LLMAdapter, MemoGrafterOperationOptions, Message } from "../core/types.js";
 import { MemoGrafterError, isMemoGrafterError, type AdapterReadiness } from "../diagnostics.js";
 import { validateCompletion } from "./validation.js";
 
@@ -12,7 +12,7 @@ export class AnthropicLLMAdapter implements LLMAdapter {
     private readonly maxTokens = 1024
   ) {}
 
-  async complete(messages: Message[], system?: string): Promise<string> {
+  async complete(messages: Message[], system?: string, operationOptions?: MemoGrafterOperationOptions): Promise<string> {
     const systemMessages = messages
       .filter((message) => message.role === "system")
       .map((message) => message.content);
@@ -26,12 +26,15 @@ export class AnthropicLLMAdapter implements LLMAdapter {
 
     try {
       const client = await this.getClient();
-      const response = await client.messages.create({
+      const request = {
         model: this.model,
         max_tokens: this.maxTokens,
         ...(systemPrompt ? { system: systemPrompt } : {}),
         messages: anthropicMessages,
-      });
+      };
+      const response = operationOptions?.signal
+        ? await client.messages.create(request, { signal: operationOptions.signal })
+        : await client.messages.create(request);
 
       return validateCompletion(response.content
         .filter((block) => block.type === "text")
