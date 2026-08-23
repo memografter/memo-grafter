@@ -4,10 +4,6 @@
 
 <h1 align="center">MemoGrafter</h1>
 
-> `MemoGrafter.create()` performs non-network provider readiness checks before storage initialization. Use `await memo.checkReadiness()` for structured checks, inspect `MemoGrafterError.code` and `operation` at public boundaries, and subscribe to best-effort warnings with `config.diagnostics.onWarning`.
-
-Durable ingestion is enabled by the PostgreSQL store after migration. `analyze()` keeps its existing return value, while `analyzeDetailed()` returns an ingestion receipt with the durable run ID, message range, queue information, warnings, and graph completion state. Accepted messages and their run record are committed together; provider preparation performs no graph writes; required graph state, cursor advancement, and run completion commit in one transaction. Use `memo-grafter doctor --ingestion` for read-only inspection. Applications can use `memo.reconcileSession()` or `memo.reconcilePendingIngestion()` when they explicitly choose to perform repairs.
-
 <p align="center">
   Lifecycle-managed memory for TypeScript AI agents.
 </p>
@@ -94,6 +90,16 @@ npx memo-grafter studio --db postgres://user:password@localhost:5432/memo_grafte
 ```
 
 If `--db` is omitted, Studio reads `.env` / `DATABASE_URL`, then `mg.config.ts`. It starts on `http://localhost:2891` or the next available port and keeps running until you stop the process.
+
+### Readiness and ingestion health
+
+MemoGrafter validates provider and storage readiness during initialization. To inspect configuration and durable-ingestion health, run:
+
+```bash
+npx memo-grafter doctor --ingestion
+```
+
+See the [User Guide](./USER_GUIDE.md) for readiness checks, structured errors, ingestion receipts, and reconciliation.
 
 ## Minimal Example
 

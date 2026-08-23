@@ -82,7 +82,7 @@ The CLI is an additive Node.js layer that lives under `cli/` and is built separa
 
 The CLI does not load the provider-bearing package root for database tooling. Migration loads `PostgresGraphStore` from the provider-independent `memo-grafter/store` subpath. Doctor loads schema metadata from `memo-grafter/schema` and uses the PostgreSQL driver directly through shared diagnostic utilities. Studio loads storage from `memo-grafter/store` and preview services from `memo-grafter/studio`. This keeps all three commands runnable when the optional OpenAI, Anthropic, and Gemini SDKs are absent.
 
-Doctor separates check collection from terminal rendering. Each result has a stable ID, section, label, `passed | failed | warning | skipped` status, optional message/help, and a `required` flag. Dependent checks are skipped after an upstream connection failure. Required failures produce exit code `1`, malformed Doctor usage produces `2`, and optional Redis warnings preserve exit code `0`. This model is the compatibility boundary for future JSON, verbose, or repair-oriented output.
+Doctor separates check collection from terminal rendering. Each result has a stable ID, section, label, `passed | failed | warning | skipped` status, optional message/help, and a `required` flag. Dependent checks are skipped after an upstream connection failure. Required failures produce exit code `1`, malformed Doctor usage produces `2`, and optional Redis warnings preserve exit code `0`. Human-readable and `--json` output use the same compatibility boundary. Doctor remains read-only; reconciliation repairs require an explicit runtime API call.
 
 The generated `mg.config.ts` keeps both Redis cache and queue examples commented, so `REDIS_URL` alone does not change runtime behavior. Doctor parses active cache and queue configuration after removing comments without damaging URL strings. Cache Redis is optional because retrieval falls back to PostgreSQL; queue Redis is required once queue mode is enabled. Shared cache/queue endpoints are pinged once, while distinct endpoints receive separate results.
 
@@ -340,12 +340,12 @@ During normal ingestion, existing graph state is not cleared. New topic nodes an
 - **Cursor-safe delivery:** completed retries are no-ops, partial overlaps are trimmed, persisted gaps can be recovered, and missing gaps fail before cursor advancement.
 - **Optional recall cache:** recall can cache raw memory search results in Redis for a short bounded TTL without caching final prompt assembly.
 - **Grafting is explicit and traceable:** memory transfer copies selected topic nodes and active atomic memories into a target session, records graph edges, and stores provenance in `mg_graft_registry` instead of silently mixing sessions.
-# Durable ingestion boundary
+## Durable Ingestion Boundary
 
 PostgreSQL-backed ingestion uses two phases. Preparation reads the immutable accepted message range, invokes providers, validates outputs, and constructs graph objects without graph writes. Commit locks the session and ingestion run, verifies the expected cursor, and atomically persists required segments, topics, memories, required edges, cursor advancement, and run completion. Semantic edges and telemetry remain best effort and can produce `completed_with_warnings`.
 
 `mg_ingestion_runs` is the durable authority for accepted, queued, running, retrying, completed, failed, cancelled, and abandoned work. Queue jobs carry only the stable run identity and range; workers reload messages from PostgreSQL, so retries cannot append the exchange again.
-# Resilience and ingestion transparency
+## Resilience And Ingestion Transparency
 
 Long-running public boundaries use the shared `MemoGrafterOperationOptions` contract (`signal` and `timeoutMs`). Explicit cancellation is reported as `OPERATION_ABORTED` and is not automatically retryable; a configured deadline is reported as retryable `OPERATION_TIMEOUT`. Provider errors remain specific when no cancellation or framework deadline occurred.
 

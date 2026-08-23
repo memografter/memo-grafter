@@ -87,7 +87,7 @@ npx memo-grafter studio
 
 `memo-grafter init` does not create, relocate, or modify an application schema file. Keep application models and tables in the location expected by Prisma, Drizzle, raw SQL migrations, or your existing database tool.
 
-`memo-grafter migrate` is the preferred migration path. It creates `pgvector`, `pgcrypto`, MemoGrafter-owned core `mg_*` tables and indexes, and the `mg_migrations` metadata table. The current schema records migration version `1` after the schema work succeeds. It does not migrate application tables, and it should run once per database or deployment rather than on every application startup. The command is idempotent and prints whether each extension, table, and index was created or already existed, followed by a reminder to run Doctor.
+`memo-grafter migrate` is the preferred migration path. It creates `pgvector`, `pgcrypto`, MemoGrafter-owned core `mg_*` tables and indexes, and the `mg_migrations` metadata table. It records the package's current migration version after the schema work succeeds. It does not migrate application tables, and it should run once per database or deployment rather than on every application startup. The command is idempotent and prints whether each extension, table, and index was created or already existed, followed by a reminder to run Doctor.
 
 ### Verify Setup With Doctor
 
@@ -107,6 +107,16 @@ Doctor checks:
 - whether all required core MemoGrafter tables exist;
 - Redis reachability when recall caching or queue mode is enabled in `mg.config.ts`.
 
+To include read-only durable-ingestion checks, pass `--ingestion`. Scope the inspection with `--session`, or request stable machine-readable output with `--json`:
+
+```bash
+npx memo-grafter doctor --ingestion
+npx memo-grafter doctor --ingestion --session <session-id>
+npx memo-grafter doctor --ingestion --json
+```
+
+Doctor never repairs ingestion state. Applications must explicitly choose repairs through `memo.reconcileSession()` or `memo.reconcilePendingIngestion()`.
+
 Doctor uses the same database resolution order as migration: `--db`, then `.env` / `DATABASE_URL`, then `src/memo-grafter/mg.config.ts`, then root `mg.config.ts`. You can override the database URL without printing it in the report:
 
 ```bash
@@ -121,7 +131,20 @@ Doctor exit codes are:
 - `1`: one or more required checks failed;
 - `2`: invalid command usage, such as an unknown option or `--db` without a value.
 
-Optional Redis warnings do not produce exit code `1`. Doctor stores checks internally as structured `passed`, `failed`, `warning`, or `skipped` results so future output modes can reuse the same checks.
+Optional Redis warnings do not produce exit code `1`. Doctor stores checks as structured `passed`, `failed`, `warning`, or `skipped` results; `--json` exposes those same stable checks for scripts and deployment diagnostics.
+
+### Cancellation, timeouts, and degraded results
+
+Selected long-running APIs accept `signal` and `timeoutMs` through `MemoGrafterOperationOptions`:
+
+```ts
+const result = await memo.context(
+  { sessionId, query },
+  { signal: request.signal, timeoutMs: 5_000 },
+);
+```
+
+Caller cancellation throws `OPERATION_ABORTED` and is not automatically retryable. A configured deadline throws retryable `OPERATION_TIMEOUT`. Optional recall-cache failures do not fail retrieval; successful degraded results set `degraded: true` and include structured `warnings`.
 
 You can launch MemoGrafter Studio again whenever you want a local visibility and debugging entry point:
 
@@ -141,6 +164,8 @@ Studio's database and inspection features do not require the OpenAI, Anthropic, 
 
 The Studio landing page shows sessions first. Select a session to open its workspace:
 
+The selected-session header also reports read-only ingestion health and pending-message count. Studio does not reconcile or repair ingestion state.
+
 - **Graph:** shows topic nodes as the stable graph backbone. Memories are shown only for the selected topic, which keeps large sessions readable. Use node type, tag, and lifecycle filters to narrow the graph. Selecting a topic shows its summary, source metadata, lifecycle state, and connected memories. Selecting a memory shows its structured fact fields, confidence, lifecycle flags, source metadata, and related, conflict, or update edges.
 - **Tables:** provides a read-only browser for the underlying `mg_*` tables using their original table names. Use the table selector and pagination controls to inspect rows; long cell values can be expanded in place.
 - **Invoke Preview:** builds the same framework-level `{ system, messages }` request plan used by `MemoGrafterAgent` or Fleet Worker invocation without calling the LLM. It shows context selection, structured messages, a readable plain-text rendering, raw memory context, retrieval explanation, and token usage. Persisted history is labelled **Database-backed preview** because live agent history is process-local. Provider adapters may transform the request, so Studio does not claim byte-for-byte provider payload equivalence. Invoke Preview requires an embedder; other Studio views remain available without one. An optional **Run with LLM** action executes the displayed short-lived plan using the server-side configured adapter and API key; Studio warns that provider charges may apply, and the returned response is not persisted or ingested.
@@ -151,7 +176,7 @@ The node details panel also provides the supported maintenance action: suppressi
 
 Studio also hosts an internal REST API for its own views, including session listing, graph reads, table reads, memory search, Invoke Preview, topic graft preview/copy/removal, and topic suppression. This API is local tooling infrastructure, not a public web service. Authentication, multi-user access control, and internet exposure are out of scope; do not bind Studio to a public interface or proxy it as an application API.
 
-Current v1 tables:
+Current MemoGrafter tables:
 
 - `mg_migrations` (migration metadata)
 - `mg_message_buffer`
@@ -164,6 +189,7 @@ Current v1 tables:
 - `mg_fleet_agents`
 - `mg_sessions`
 - `mg_session_ingest_state`
+- `mg_ingestion_runs`
 - `mg_graft_registry`
 
 `mg_topic_nodes` and `mg_memory_nodes` include optional `tags TEXT[]` columns. Tags default to an empty array, so existing untagged sessions continue to work normally.
@@ -1841,6 +1867,7 @@ Main exports:
 - `GraphStore`
 - `FleetAgentRecord`
 - `RetrievalResult`
+- `MemoGrafterOperationOptions`
 - `RetrieverConfig`
 - `TagFilterOptions`
 - `IngestOptions`
@@ -1870,7 +1897,7 @@ Useful `GraphStore` inspection methods:
 Common `MemoGrafterAgent` methods:
 
 - `initialize()`: verify that MemoGrafter storage has already been migrated.
-- `invoke(message)`: send a user message and receive an assistant response.
+- `invoke(message, operationOptions?)`: send a user message and receive an assistant response, with optional cancellation or timeout control.
 - `ingestText(text, options?)`: ingest raw text without generating an assistant response.
 - `remember(text, options?)`: store explicit natural-language facts or preferences through the text ingestion path.
 - `getHistory()`: read local chat history.
@@ -1899,17 +1926,3 @@ Common `MemoGrafterAgent` methods:
 - `absorbFromAgent(sourceAgent, options)`: select and copy memory from another agent.
 - `removeGraft(nodeId)`: remove a registered graft node from the current session.
 - `close()`: close database and queue resources.
-# Ingestion health and operation control
-
-Use `npx memo-grafter doctor --ingestion` to inspect all durable-ingestion state, or add `--session <id>` to scope the check. Add `--json` for stable machine-readable check IDs and statuses. Doctor never repairs data; applications must explicitly choose repairs through `memo.reconcileSession(...)`.
-
-Selected long-running APIs accept an optional second or third operation-options argument:
-
-```ts
-const result = await memo.context(
-  { sessionId, query, cache: { ttlSeconds: 90 } },
-  { signal: request.signal, timeoutMs: 5_000 },
-);
-```
-
-Successful retrieval can be degraded when only the optional cache failed. Check `result.degraded` and `result.warnings`; facts and the existing successful return fields are unchanged.
