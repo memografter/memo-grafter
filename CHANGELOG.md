@@ -248,3 +248,22 @@ All notable changes to this project will be documented here.
 - Made optional retrieval-cache failures visible through `RetrievalResult.degraded` and structured warnings.
 - Folded read-only ingestion inspection into `memo-grafter doctor --ingestion [--session <id>] [--json]`; runtime reconciliation APIs remain available for explicit repair.
 - Added read-only Studio ingestion-health status, pending-message metadata, and fault-injection coverage without a schema migration.
+
+## [0.5.1] - 2026-08-23
+
+### Added
+
+* Added durable ingestion with idempotent queue retries and reconciliation for recovering incomplete ingestion work.
+* Added a unified global error system for consistent framework-level error handling and diagnostics.
+* Added ingestion transparency and resilience improvements for better visibility into ingestion state and failures.
+
+### Changed
+
+* Improved `analyze()` ingestion durability so failed processing can recover safely without corrupting or overwriting previously persisted conversation state.
+* Improved queued ingestion behavior to make retries idempotent and prevent duplicate processing.
+* Strengthened framework resilience around partial failures and interrupted ingestion workflows.
+
+### Fixed
+
+* Fixed ingestion recovery behavior when `analyze()` fails after partially persisting conversation data.
+* Fixed retry handling to safely resume incomplete ingestion rather than reprocessing already persisted work.
