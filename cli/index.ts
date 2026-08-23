@@ -3,7 +3,6 @@ import { runInit } from "./commands/init.js";
 import { runMigrate } from "./commands/migrate.js";
 import { runStudio } from "./commands/studio.js";
 import { runDoctor } from "./commands/doctor.js";
-import { runReconcile } from "./commands/reconcile.js";
 import { isHandledDatabaseSetupError } from "./utils/database-errors.js";
 import { logger } from "./utils/logger.js";
 
@@ -19,12 +18,9 @@ try {
   } else if (command === "studio") {
     await runStudio({ db: readFlag(args, "--db") });
   } else if (command === "doctor") {
-    const db = readDoctorArguments(args);
-    const report = await runDoctor({ ...(db ? { db } : {}) });
+    const options = readDoctorArguments(args);
+    const report = await runDoctor(options);
     logger.info(report.output);
-    process.exitCode = report.exitCode;
-  } else if (command === "reconcile") {
-    const report = await runReconcile(readReconcileArguments(args));
     process.exitCode = report.exitCode;
   } else {
     printHelp();
@@ -52,36 +48,30 @@ function readFlag(args: string[], flag: string): string | undefined {
   return undefined;
 }
 
-function readDoctorArguments(args: string[]): string | undefined {
-  let db: string | undefined;
+function readDoctorArguments(args: string[]): { db?: string; ingestion?: boolean; sessionId?: string; json?: boolean } {
+  const result: { db?: string; ingestion?: boolean; sessionId?: string; json?: boolean } = {};
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]!;
     if (arg.startsWith("--db=")) {
-      db = arg.slice("--db=".length);
-      if (!db) throw new CliUsageError("--db requires a connection string.");
+      result.db = arg.slice("--db=".length);
+      if (!result.db) throw new CliUsageError("--db requires a connection string.");
     } else if (arg === "--db") {
-      db = args[index + 1];
-      if (!db || db.startsWith("--")) throw new CliUsageError("--db requires a connection string.");
+      result.db = args[index + 1];
+      if (!result.db || result.db.startsWith("--")) throw new CliUsageError("--db requires a connection string.");
+      index += 1;
+    } else if (arg === "--ingestion") {
+      result.ingestion = true;
+    } else if (arg === "--json") {
+      result.json = true;
+    } else if (arg === "--session") {
+      result.sessionId = args[index + 1];
+      if (!result.sessionId || result.sessionId.startsWith("--")) throw new CliUsageError("--session requires an id.");
       index += 1;
     } else {
       throw new CliUsageError(`Unknown doctor option: ${arg}`);
     }
   }
-  return db;
-}
-
-function readReconcileArguments(args: string[]): { db?: string; sessionId?: string; repair?: boolean; actions?: string[]; json?: boolean } {
-  const result: { db?: string; sessionId?: string; repair?: boolean; actions?: string[]; json?: boolean } = {};
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index]!;
-    if (arg === "--repair") result.repair = true;
-    else if (arg === "--json") result.json = true;
-    else if (["--db", "--session", "--action"].includes(arg)) {
-      const value = args[++index]; if (!value || value.startsWith("--")) throw new CliUsageError(`${arg} requires a value.`);
-      if (arg === "--db") result.db = value; else if (arg === "--session") result.sessionId = value; else result.actions = [...(result.actions ?? []), value];
-    } else throw new CliUsageError(`Unknown reconcile option: ${arg}`);
-  }
-  if (result.actions?.length && !result.repair) throw new CliUsageError("--action requires --repair.");
+  if (result.sessionId && !result.ingestion) throw new CliUsageError("--session requires --ingestion.");
   return result;
 }
 
@@ -91,10 +81,8 @@ function printHelp(): void {
 Usage:
   memo-grafter init
   memo-grafter migrate [--db <connection-string>]
-  memo-grafter doctor [--db <connection-string>]
+  memo-grafter doctor [--db <connection-string>] [--ingestion] [--session <id>] [--json]
   memo-grafter studio [--db <connection-string>]
-  memo-grafter reconcile [--session <id>] [--json]
-  memo-grafter reconcile --repair --action <action>
 
 Recommended setup:
   memo-grafter init

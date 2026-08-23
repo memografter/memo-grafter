@@ -21,6 +21,14 @@ afterEach(() => {
 });
 
 describe("memo-grafter doctor", () => {
+  it("folds read-only ingestion inspection into doctor JSON output", async () => {
+    const cwd = await createProject();
+    const { dependencies } = healthyDependencies();
+    dependencies.inspectIngestion = vi.fn(async () => [{ code: "retryable-failure", severity: "error", sessionId: "session-1", message: "Processing failed.", repairable: true }]);
+    const report = await runDoctor({ cwd, db: "postgres://example", ingestion: true, sessionId: "session-1", json: true }, dependencies);
+    expect(report.exitCode).toBe(1);
+    expect(JSON.parse(report.output)).toMatchObject({ ready: false, checks: expect.arrayContaining([expect.objectContaining({ id: "ingestion.health", status: "failed" })]) });
+  });
   it("reports a healthy PostgreSQL setup and optional Redis", async () => {
     const cwd = await createProject();
     const { dependencies, end } = healthyDependencies();

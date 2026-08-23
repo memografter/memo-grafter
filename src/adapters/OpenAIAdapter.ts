@@ -1,6 +1,6 @@
 import type OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
-import type { EmbedAdapter, LLMAdapter, Message } from "../core/types.js";
+import type { EmbedAdapter, LLMAdapter, MemoGrafterOperationOptions, Message } from "../core/types.js";
 import { MemoGrafterError, isMemoGrafterError, type AdapterReadiness } from "../diagnostics.js";
 import { validateCompletion, validateEmbedding } from "./validation.js";
 
@@ -17,7 +17,7 @@ export class OpenAILLMAdapter implements LLMAdapter {
     private readonly options: OpenAILLMAdapterOptions = {},
   ) {}
 
-  async complete(messages: Message[], system?: string): Promise<string> {
+  async complete(messages: Message[], system?: string, operationOptions?: MemoGrafterOperationOptions): Promise<string> {
     const openAiMessages: ChatCompletionMessageParam[] = [
       ...(system ? [{ role: "system" as const, content: system }] : []),
       ...messages.map((message) => ({
@@ -30,11 +30,14 @@ export class OpenAILLMAdapter implements LLMAdapter {
       const client = await this.getClient();
 
       if (this.options.streaming) {
-        const stream = await client.chat.completions.create({
+        const request = {
           model: this.model,
           messages: openAiMessages,
           stream: true,
-        });
+        } as const;
+        const stream = operationOptions?.signal
+          ? await client.chat.completions.create(request, { signal: operationOptions.signal })
+          : await client.chat.completions.create(request);
         let response = "";
 
         for await (const chunk of stream) {
@@ -48,10 +51,13 @@ export class OpenAILLMAdapter implements LLMAdapter {
         return validateCompletion(response);
       }
 
-      const response = await client.chat.completions.create({
+      const request = {
         model: this.model,
         messages: openAiMessages,
-      });
+      };
+      const response = operationOptions?.signal
+        ? await client.chat.completions.create(request, { signal: operationOptions.signal })
+        : await client.chat.completions.create(request);
 
       return validateCompletion(response.choices[0]?.message.content);
     } catch (error) {
@@ -82,13 +88,16 @@ export class OpenAIEmbedAdapter implements EmbedAdapter {
   readonly dimensions: number;
   constructor(private readonly model = "text-embedding-3-small", dimensions = 1536) { this.dimensions = dimensions; }
 
-  async embed(text: string): Promise<number[]> {
+  async embed(text: string, operationOptions?: MemoGrafterOperationOptions): Promise<number[]> {
     try {
       const client = await this.getClient();
-      const response = await client.embeddings.create({
+      const request = {
         model: this.model,
         input: text,
-      });
+      };
+      const response = operationOptions?.signal
+        ? await client.embeddings.create(request, { signal: operationOptions.signal })
+        : await client.embeddings.create(request);
 
       return validateEmbedding(response.data[0]?.embedding, this.dimensions);
     } catch (error) {

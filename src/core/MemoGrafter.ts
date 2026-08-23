@@ -23,6 +23,7 @@ import type {
   MemoryHistoryOptions,
   MemoryHistoryResult,
   MemoGrafterConfig,
+  MemoGrafterOperationOptions,
   Message,
   PinnedContextResult,
   RetrievalResult,
@@ -37,6 +38,7 @@ import { countApproxTokens } from "../utils/text/tokenCount.js";
 import { MemoGrafterError, emitWarning, enrichMemoGrafterError, isMemoGrafterError, type MemoGrafterDiagnostics, type ReadinessResult } from "../diagnostics.js";
 import type { AnalyzeDetailedInput, AnalyzeReceipt, IngestionRun, MemoGrafterCloseOptions, ReconciliationOptions, ReconciliationReport } from "../ingestion/types.js";
 import { MemoGrafterShutdownError } from "../ingestion/types.js";
+import { createOperationControl } from "../utils/operationControl.js";
 
 export class MemoGrafter {
   readonly llm: LLMAdapter;
@@ -217,13 +219,13 @@ export class MemoGrafter {
     });
   }
 
-  analyzeDetailed(input: AnalyzeDetailedInput): Promise<AnalyzeReceipt> {
+  analyzeDetailed(input: AnalyzeDetailedInput, operationOptions?: MemoGrafterOperationOptions): Promise<AnalyzeReceipt> {
     const validated = this.validateAnalyzeInput(input);
     if (!this.storageInitialized) throw new MemoGrafterError("MemoGrafter must be initialized before analyzeDetailed().", { code: "STORAGE_INITIALIZATION_FAILED", operation: "analyze", retryable: false });
     if (!this.store.acceptIngestionRun || !this.store.commitPreparedIngestion || !this.store.transitionIngestionRun) {
       throw new MemoGrafterError("analyzeDetailed requires a durable ingestion store.", { code: "CONFIGURATION_INVALID", operation: "analyze", retryable: false });
     }
-    return this.runDetailedAnalyze(validated);
+    return this.runDetailedAnalyze(validated, operationOptions);
   }
 
   getIngestionRun(runId: string): Promise<IngestionRun | null> {
@@ -231,8 +233,12 @@ export class MemoGrafter {
     return this.store.getIngestionRun(this.requireNonBlankString(runId, "runId"));
   }
 
-  private async runDetailedAnalyze(input: { sessionId: string; messages: Message[]; tags?: string[]; idempotencyKey?: string }): Promise<AnalyzeReceipt> {
+  private async runDetailedAnalyze(input: { sessionId: string; messages: Message[]; tags?: string[]; idempotencyKey?: string }, operationOptions?: MemoGrafterOperationOptions): Promise<AnalyzeReceipt> {
+    const control = createOperationControl(operationOptions, "analyze", "message-persistence");
+    control.throwIfAborted();
     const run = await this.store.acceptIngestionRun!({ sessionId: input.sessionId, kind: "append", messages: input.messages, ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}) });
+    try {
+    control.throwIfAborted("graph-processing");
     const options: IngestOptions = input.tags ? { tags: input.tags } : {};
     if (this.ingestQueue) {
       if (run.status === "queued" || run.status === "running") return { status: "queued", ingestionRunId: run.id, sessionId: run.sessionId, messageRange: [run.startIndex, run.endIndex], messagesPersisted: true, graphProcessed: false, job: { id: run.id, queueName: this.ingestQueue.getQueueName() } };
@@ -249,27 +255,35 @@ export class MemoGrafter {
     const tail = previous.then(() => current);
     this.pendingDetailedAnalyze.set(run.sessionId, tail);
     let result: Awaited<ReturnType<IngestPipeline["processIngestionRun"]>>;
-    try { await previous; result = await this.ingestPipeline.processIngestionRun(run, options); }
+    try { await previous; control.throwIfAborted("graph-processing"); result = await this.ingestPipeline.processIngestionRun(run, options); }
     finally { release(); if (this.pendingDetailedAnalyze.get(run.sessionId) === tail) this.pendingDetailedAnalyze.delete(run.sessionId); }
     return { status: "processed", ingestionRunId: run.id, sessionId: run.sessionId, messageRange: [run.startIndex, run.endIndex], messagesPersisted: true, graphProcessed: true, nodes: result.nodes, ...(result.warnings.length ? { warnings: result.warnings } : {}) };
+    } catch (error) {
+      try { control.throwIfAborted("graph-processing"); }
+      catch (cancellation) {
+        if (isMemoGrafterError(cancellation)) throw enrichMemoGrafterError(cancellation, { context: { sessionId: run.sessionId, messageRange: [run.startIndex, run.endIndex], messagesPersisted: true, graphProcessed: false, cursorAdvanced: false, retrySafe: true, jobId: run.id } });
+        throw cancellation;
+      }
+      throw error;
+    } finally { control.dispose(); }
   }
 
   /** Retrieve fresh graph context for an external LLM call. */
-  context(input: { sessionId: string; query: string } & RetrieverConfig): Promise<RetrievalResult> {
+  context(input: { sessionId: string; query: string } & RetrieverConfig, operationOptions?: MemoGrafterOperationOptions): Promise<RetrievalResult> {
     const sessionId = this.requireNonBlankString(input?.sessionId, "sessionId");
     const query = this.requireNonBlankString(input?.query, "query");
     const { sessionId: _sessionId, query: _query, ...options } = input;
     this.validateRetrieverOptions(options);
 
-    return this.buildContext(sessionId, query, options).catch((error: unknown) => {
+    return this.buildContext(sessionId, query, options, operationOptions).catch((error: unknown) => {
       if (isMemoGrafterError(error)) throw enrichMemoGrafterError(error, { operation: "context" });
       throw new MemoGrafterError("MemoGrafter context retrieval failed.", { code: "CONTEXT_FAILED", operation: "context", retryable: true, context: { sessionId }, cause: error });
     });
   }
 
-  private async buildContext(sessionId: string, query: string, options: RetrieverConfig): Promise<RetrievalResult> {
+  private async buildContext(sessionId: string, query: string, options: RetrieverConfig, operationOptions?: MemoGrafterOperationOptions): Promise<RetrievalResult> {
     const pipeline = new RetrieverPipeline(this.store, this.embedder, options, null, this.diagnostics);
-    const recalled = await pipeline.run(query, sessionId);
+    const recalled = await pipeline.run(query, sessionId, operationOptions);
     return this.combinePinnedContext(sessionId, recalled);
   }
 
@@ -505,19 +519,24 @@ export class MemoGrafter {
     if (failures.length || pending > 0) throw new MemoGrafterShutdownError("MemoGrafter did not shut down cleanly.", failures, pending, pending > 0);
   }
 
-  async reconcileSession(sessionId: string, options: ReconciliationOptions = {}): Promise<ReconciliationReport> {
-    return this.reconcile(this.requireNonBlankString(sessionId, "sessionId"), options);
+  async reconcileSession(sessionId: string, options: ReconciliationOptions = {}, operationOptions?: MemoGrafterOperationOptions): Promise<ReconciliationReport> {
+    return this.reconcile(this.requireNonBlankString(sessionId, "sessionId"), options, operationOptions);
   }
 
-  reconcilePendingIngestion(options: ReconciliationOptions = {}): Promise<ReconciliationReport> { return this.reconcile(undefined, options); }
+  reconcilePendingIngestion(options: ReconciliationOptions = {}, operationOptions?: MemoGrafterOperationOptions): Promise<ReconciliationReport> { return this.reconcile(undefined, options, operationOptions); }
 
-  private async reconcile(sessionId: string | undefined, options: ReconciliationOptions): Promise<ReconciliationReport> {
+  private async reconcile(sessionId: string | undefined, options: ReconciliationOptions, operationOptions?: MemoGrafterOperationOptions): Promise<ReconciliationReport> {
+    const control = createOperationControl(operationOptions, "ingest", "storage-initialization");
+    control.throwIfAborted();
+    try {
     if (!this.store.inspectIngestionConsistency || !this.store.listIngestionRuns || !this.store.transitionIngestionRun) throw new MemoGrafterError("The configured store does not support ingestion reconciliation.", { code: "CONFIGURATION_INVALID", operation: "ingest", retryable: false });
     const issues = await this.store.inspectIngestionConsistency(sessionId);
+    control.throwIfAborted();
     const repaired: ReconciliationReport["repaired"] = [];
     if (options.mode === "repair") {
       const selected = new Set(options.repairs ?? []);
       for (const issue of issues) {
+        control.throwIfAborted();
         if (!issue.runId) continue;
         const run = await this.store.getIngestionRun?.(issue.runId);
         if (!run) continue;
@@ -532,6 +551,7 @@ export class MemoGrafter {
       }
     }
     return { mode: options.mode ?? "inspect", issues, repaired };
+    } finally { control.dispose(); }
   }
 
   private assertServerEnvironment(): void {

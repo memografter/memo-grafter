@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { Redis } from "ioredis";
 import { buildFactRetrievalPrompt, formatFactBlock } from "../../../src/prompts/factRetrievalPrompt.js";
 import { RetrieverPipeline } from "../../../src/retrieval/RetrieverPipeline.js";
 import type { GraphStore } from "../../../src/store/index.js";
@@ -88,6 +89,16 @@ function makeStore(
 }
 
 describe("RetrieverPipeline", () => {
+  it("returns structured degraded metadata when the optional cache is unavailable", async () => {
+    const fact = makeScoredMemoryNode({ memoryType: "fact", subject: "cache", predicate: "is", value: "optional", confidence: 1 });
+    const store = makeStore({ searchMemories: vi.fn(async () => [fact]), getTopicNode: async () => makeTopicNode({}) });
+    const cache = { get: vi.fn(async () => { throw new Error("redis down"); }), setex: vi.fn(async () => "OK") } as unknown as Redis;
+    const pipeline = new RetrieverPipeline(store, makeEmbedder(), { cache: { ttlSeconds: 90 } }, cache);
+    const result = await pipeline.run("query", "session-1");
+    expect(result.degraded).toBe(true);
+    expect(result.warnings?.[0]).toMatchObject({ code: "CACHE_UNAVAILABLE", operation: "context" });
+    expect(store.searchMemories).toHaveBeenCalledOnce();
+  });
   it("returns early on empty search results", async () => {
     const pipeline = new RetrieverPipeline(makeStore(), makeEmbedder(), {});
 

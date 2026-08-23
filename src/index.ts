@@ -54,6 +54,7 @@ export type {
   MemoryHistoryEntry,
   MemoryHistoryOptions,
   MemoryHistoryResult,
+  MemoGrafterOperationOptions,
   MemoryHistoryStatus,
   MemoryNode,
   MemoryNodeInsert,

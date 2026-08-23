@@ -18,6 +18,7 @@ describe("MemoGrafter Studio API", () => {
       const tables = await requestJson(port, "/api/sessions/session-1/tables");
       const memories = await requestJson(port, "/api/sessions/session-1/memories");
       const search = await requestJson(port, "/sessions/session-1/search?q=alpha");
+      const unavailableHealth = await requestJson(port, "/api/sessions/session-1/ingestion-health");
 
       expect(sessions.status).toBe(200);
       expect(sessions.body).toMatchObject({
@@ -62,6 +63,7 @@ describe("MemoGrafter Studio API", () => {
         topics: [{ id: "topic-1", label: "Alpha topic" }],
         memories: [{ id: memoryId, value: "alpha memory" }],
       });
+      expect(unavailableHealth.body).toMatchObject({ available: false, status: "unavailable" });
       expect(context.store.getNodesBySession).toHaveBeenCalledWith("session-1", { includeSuppressed: true });
       expect(context.store.getMessagesBySession).toHaveBeenCalledWith("session-1");
       expect(context.repository.listSessions).toHaveBeenCalledWith(undefined);
@@ -72,6 +74,19 @@ describe("MemoGrafter Studio API", () => {
     } finally {
       await closeServer(server);
     }
+  });
+
+  it("exposes read-only session ingestion health", async () => {
+    const context = makeContext();
+    context.store.inspectIngestionConsistency = vi.fn(async () => []);
+    context.store.listIngestionRuns = vi.fn(async () => [{ id: "run-1", status: "completed", startIndex: 0, endIndex: 0, updatedAt: new Date() }]);
+    context.store.getSessionIngestState = vi.fn(async () => ({ lastIngestedMessageIndex: 0 }));
+    const server = createApiServer(context);
+    const port = await listenOnAvailablePort(server, "127.0.0.1", 0);
+    try {
+      const health = await requestJson(port, "/api/sessions/session-1/ingestion-health");
+      expect(health.body).toMatchObject({ available: true, status: "healthy", bufferedThrough: 0, processedThrough: 0, pendingMessages: 0 });
+    } finally { await closeServer(server); }
   });
 
   it("runs invoke preview through the configured preview service", async () => {

@@ -242,3 +242,9 @@ All notable changes to this project will be documented here.
 
 * Expanded MemoGrafter Studio from memory inspection toward interactive memory management and invocation debugging.
 * Improved MemoGrafter's integration model so existing chatbot applications can use its memory and context capabilities without depending solely on the built-in agent flow.
+# Unreleased
+
+- Added consistent cancellation and timeout errors to selected long-running runtime APIs and propagated signals to supported provider SDK requests.
+- Made optional retrieval-cache failures visible through `RetrievalResult.degraded` and structured warnings.
+- Folded read-only ingestion inspection into `memo-grafter doctor --ingestion [--session <id>] [--json]`; runtime reconciliation APIs remain available for explicit repair.
+- Added read-only Studio ingestion-health status, pending-message metadata, and fault-injection coverage without a schema migration.

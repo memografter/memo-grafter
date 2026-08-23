@@ -10,12 +10,14 @@ import type {
   MemoryNode,
   RetrievalResult,
   RetrieverConfig,
+  MemoGrafterOperationOptions,
   TopicNode,
 } from "../core/types.js";
 import { countApproxTokens } from "../utils/text/tokenCount.js";
 import { normalizeTags } from "../utils/tags.js";
 import { validateEmbedding } from "../adapters/validation.js";
-import { emitWarning, type MemoGrafterDiagnostics } from "../diagnostics.js";
+import { emitWarning, type MemoGrafterDiagnostics, type MemoGrafterWarning } from "../diagnostics.js";
+import { createOperationControl } from "../utils/operationControl.js";
 
 type ScoredMemoryNode = MemoryNode & { similarity: number };
 type RankedMemoryNode = ScoredMemoryNode & { retrievalScore: number };
@@ -41,7 +43,10 @@ export class RetrieverPipeline {
     private diagnostics?: MemoGrafterDiagnostics,
   ) {}
 
-  async run(query: string, sessionId: string): Promise<RetrievalResult> {
+  async run(query: string, sessionId: string, options?: MemoGrafterOperationOptions): Promise<RetrievalResult> {
+    const control = createOperationControl(options, "context", "provider-request");
+    const warnings: MemoGrafterWarning[] = [];
+    try {
     const limit = this.config.limit ?? 10;
     const minSimilarity = this.config.minSimilarity ?? 0.6;
     const tokenBudget = this.config.tokenBudget ?? 1200;
@@ -54,13 +59,18 @@ export class RetrieverPipeline {
     const sessionIds = this.resolveSessionIds(sessionId);
     const hasConfiguredSessionIds = configuredSessionIds.length > 0;
 
-    const embedding = validateEmbedding(await this.embedder.embed(query), this.embedder.dimensions, "context");
+    control.throwIfAborted();
+    let rawEmbedding: number[];
+    try { rawEmbedding = options ? await this.embedder.embed(query, { signal: control.signal }) : await this.embedder.embed(query); }
+    catch (error) { control.throwIfAborted(); throw error; }
+    const embedding = validateEmbedding(rawEmbedding, this.embedder.dimensions, "context");
+    control.throwIfAborted();
     const searchedFacts = await this.searchMemories(embedding, sessionId, limit, minSimilarity, {
       tags,
       tagMode,
       scope,
       ...(hasConfiguredSessionIds ? { sessionIds } : {}),
-    });
+    }, warnings);
     const activeFacts = searchedFacts
       .filter((fact) => fact.decayed === false && fact.supersededBy == null && !fact.forgotten)
       .map((fact) => this.rankFact(fact))
@@ -73,6 +83,7 @@ export class RetrieverPipeline {
         systemPrompt: buildFactRetrievalPrompt([]),
         tokenCount: 0,
         tokenBudget,
+        ...(warnings.length ? { degraded: true, warnings } : {}),
       };
     }
 
@@ -108,7 +119,11 @@ export class RetrieverPipeline {
       systemPrompt: buildFactRetrievalPrompt(includedBlocks),
       tokenCount,
       tokenBudget,
+      ...(warnings.length ? { degraded: true, warnings } : {}),
     };
+    } finally {
+      control.dispose();
+    }
   }
 
   private async searchMemories(
@@ -122,6 +137,7 @@ export class RetrieverPipeline {
       scope?: "session" | "session-and-tags" | "tagged";
       sessionIds?: string[];
     },
+    warnings: MemoGrafterWarning[],
   ): Promise<ScoredMemoryNode[]> {
     if (!this.config.cache || !this.cacheRedis) {
       return this.store.searchMemories(
@@ -153,27 +169,19 @@ export class RetrieverPipeline {
         return JSON.parse(hit) as ScoredMemoryNode[];
       }
 
-      const searchedFacts = await this.store.searchMemories(
-        embedding,
-        sessionId,
-        limit,
-        minSimilarity,
-        options,
-      );
-      await this.cacheRedis.setex(cacheKey, ttl, JSON.stringify(searchedFacts));
-
-      return searchedFacts;
     } catch (error: unknown) {
-      emitWarning(this.diagnostics, { code: "CACHE_UNAVAILABLE", operation: "context", context: { sessionId }, cause: error });
-      console.warn("MemoGrafter recall cache warning:", error);
-      return this.store.searchMemories(
-        embedding,
-        sessionId,
-        limit,
-        minSimilarity,
-        options,
-      );
+      const warning: MemoGrafterWarning = { code: "CACHE_UNAVAILABLE", operation: "context", context: { sessionId }, cause: error };
+      warnings.push(warning);
+      emitWarning(this.diagnostics, warning);
     }
+    const searchedFacts = await this.store.searchMemories(embedding, sessionId, limit, minSimilarity, options);
+    try { await this.cacheRedis.setex(cacheKey, ttl, JSON.stringify(searchedFacts)); }
+    catch (error: unknown) {
+      const warning: MemoGrafterWarning = { code: "CACHE_UNAVAILABLE", operation: "context", context: { sessionId }, cause: error };
+      warnings.push(warning);
+      emitWarning(this.diagnostics, warning);
+    }
+    return searchedFacts;
   }
 
   private hashEmbedding(embedding: number[]): string {

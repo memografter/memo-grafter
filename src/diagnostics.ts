@@ -1,5 +1,5 @@
 export type MemoGrafterOperation =
-  | "create" | "readiness" | "analyze" | "context" | "invoke" | "ingest" | "storage";
+  | "create" | "readiness" | "analyze" | "context" | "invoke" | "ingest" | "storage" | "maintenance";
 
 export type MemoGrafterStage =
   | "configuration" | "provider-loading" | "provider-request" | "topic-extraction"
@@ -10,7 +10,8 @@ export type MemoGrafterErrorCode =
   | "PROVIDER_SDK_MISSING" | "PROVIDER_CONFIGURATION_MISSING" | "PROVIDER_REQUEST_FAILED"
   | "PROVIDER_RESPONSE_INVALID" | "EXTRACTION_RESPONSE_INVALID" | "EMBEDDING_RESPONSE_INVALID"
   | "STORAGE_INITIALIZATION_FAILED" | "STORAGE_OPERATION_FAILED" | "INGESTION_FAILED"
-  | "INGESTION_INVARIANT_VIOLATION" | "INGESTION_ORDER_PENDING" | "SHUTDOWN_FAILED" | "CONTEXT_FAILED";
+  | "INGESTION_INVARIANT_VIOLATION" | "INGESTION_ORDER_PENDING" | "SHUTDOWN_FAILED" | "CONTEXT_FAILED"
+  | "OPERATION_ABORTED" | "OPERATION_TIMEOUT";
 
 export type MemoGrafterWarningCode =
   | "BEST_EFFORT_OPERATION_FAILED" | "CACHE_UNAVAILABLE" | "EXTRACTION_ITEM_SKIPPED"
