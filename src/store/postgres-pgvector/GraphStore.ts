@@ -1364,6 +1364,59 @@ export class PostgresGraphStore implements GraphStore {
     }));
   }
 
+  async searchMemoryCandidates(
+    embedding: number[],
+    sessionId: string,
+    limit: number,
+    options: TagFilterOptions = {},
+  ): Promise<(MemoryNode & { similarity: number })[]> {
+    if (options.sessionIds && options.sessionIds.length > 0) {
+      return this.searchMemoryCandidatesAcrossSessions(embedding, options.sessionIds, limit, options);
+    }
+
+    const tags = normalizeTags(options.tags);
+    const searchTaggedSessions = options.scope === "tagged" && tags.length > 0;
+    const rows = await this.sql<Array<MemoryNodeRow & { similarity: number }>>`
+      SELECT memory.*, 1 - (memory.embedding <=> ${toVectorLiteral(embedding)}::vector) AS similarity
+      FROM mg_memory_nodes memory
+      JOIN mg_topic_nodes topic ON topic.id = memory.topic_node_id
+      WHERE ${searchTaggedSessions ? this.sql`TRUE` : this.sql`memory.session_id = ${sessionId}`}
+        AND memory.decayed = false
+        AND memory.superseded_by IS NULL
+        AND memory.forgotten = false
+        AND topic.suppressed = false
+        ${this.memoryTagsFilterSql(tags, options.tagMode, "memory")}
+      ORDER BY memory.embedding <=> ${toVectorLiteral(embedding)}::vector
+      LIMIT ${limit}
+    `;
+
+    return rows.map((row) => ({ ...this.rowToMemoryNode(row), similarity: row.similarity }));
+  }
+
+  private async searchMemoryCandidatesAcrossSessions(
+    embedding: number[],
+    sessionIds: string[],
+    limit: number,
+    options: TagFilterOptions = {},
+  ): Promise<(MemoryNode & { similarity: number })[]> {
+    if (sessionIds.length === 0) return [];
+    const tags = normalizeTags(options.tags);
+    const rows = await this.sql<Array<MemoryNodeRow & { similarity: number }>>`
+      SELECT memory.*, 1 - (memory.embedding <=> ${toVectorLiteral(embedding)}::vector) AS similarity
+      FROM mg_memory_nodes memory
+      JOIN mg_topic_nodes topic ON topic.id = memory.topic_node_id
+      WHERE memory.session_id = ANY(${this.sql.array(sessionIds)})
+        AND memory.decayed = false
+        AND memory.superseded_by IS NULL
+        AND memory.forgotten = false
+        AND topic.suppressed = false
+        ${this.memoryTagsFilterSql(tags, options.tagMode, "memory")}
+      ORDER BY memory.embedding <=> ${toVectorLiteral(embedding)}::vector
+      LIMIT ${limit}
+    `;
+    return rows.map((row) => ({ ...this.rowToMemoryNode(row), similarity: row.similarity }));
+  }
+
   async searchMemoriesAcrossSessions(
     embedding: number[],
     sessionIds: string[],

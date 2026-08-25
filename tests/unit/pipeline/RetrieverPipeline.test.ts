@@ -487,13 +487,72 @@ describe("RetrieverPipeline", () => {
         getTopicNode: async (topicNodeId) => topicNodeId === "topic-a" ? topicA : topicB,
       }),
       makeEmbedder(),
-      {},
+      { selection: { scoreGapThreshold: 1 } },
     );
 
     const result = await pipeline.run("query", "session-1");
 
     expect(result.facts.map((fact) => fact.id)).toEqual(["high-confidence", "low-confidence"]);
     expect(result.facts[0]).not.toHaveProperty("retrievalScore");
+  });
+
+  it("retrieves a broad unthresholded candidate pool before ranking", async () => {
+    const calls: Array<{ limit: number; minSimilarity: number }> = [];
+    const pipeline = new RetrieverPipeline(
+      makeStore({
+        searchMemories: async (_embedding, _sessionId, limit, minSimilarity) => {
+          calls.push({ limit, minSimilarity });
+          return [];
+        },
+      }),
+      makeEmbedder(),
+      {},
+    );
+
+    await pipeline.run("query", "session-1");
+
+    expect(calls).toEqual([{ limit: 40, minSimilarity: -1 }]);
+  });
+
+  it("can select a useful fact below the former similarity floor", async () => {
+    const topic = makeTopicNode({ id: "topic-a", label: "Topic A", summary: "summary" });
+    const fact = makeScoredMemoryNode({
+      id: "below-old-floor",
+      topicNodeId: topic.id,
+      similarity: 0.42,
+      confidence: 1,
+    });
+    const pipeline = new RetrieverPipeline(
+      makeStore({ searchMemories: async () => [fact], getTopicNode: async () => topic }),
+      makeEmbedder(),
+      { minSimilarity: 0.95 },
+    );
+
+    const result = await pipeline.run("query", "session-1");
+
+    expect(result.facts.map((candidate) => candidate.id)).toEqual(["below-old-floor"]);
+    expect(result.selection?.candidateCount).toBe(1);
+  });
+
+  it("stops adaptive selection at a significant ranked score gap", async () => {
+    const topics = new Map([
+      ["topic-a", makeTopicNode({ id: "topic-a", label: "A", summary: "A" })],
+      ["topic-b", makeTopicNode({ id: "topic-b", label: "B", summary: "B" })],
+    ]);
+    const facts = [
+      makeScoredMemoryNode({ id: "strong", topicNodeId: "topic-a", similarity: 0.95, confidence: 1 }),
+      makeScoredMemoryNode({ id: "weak", topicNodeId: "topic-b", similarity: 0.4, confidence: 0.2 }),
+    ];
+    const pipeline = new RetrieverPipeline(
+      makeStore({ searchMemories: async () => facts, getTopicNode: async (id) => topics.get(id) ?? null }),
+      makeEmbedder(),
+      {},
+    );
+
+    const result = await pipeline.run("query", "session-1");
+
+    expect(result.facts.map((candidate) => candidate.id)).toEqual(["strong"]);
+    expect(result.selection?.reason).toBe("relative-score");
   });
 
   it("allows scoring weights to be tuned", async () => {

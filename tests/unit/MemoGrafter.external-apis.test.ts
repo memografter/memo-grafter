@@ -70,8 +70,8 @@ describe("MemoGrafter external application APIs", () => {
     expect(searchMemories).toHaveBeenCalledWith(
       [0.1, 0.2],
       "session-1",
-      4,
-      0.5,
+      40,
+      -1,
       { tags: [], tagMode: "all", scope: "session" },
     );
     expect(result).toMatchObject({ facts: [], nodes: [], tokenCount: 0, tokenBudget: 800 });

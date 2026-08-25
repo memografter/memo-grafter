@@ -122,6 +122,11 @@ function patchStore(
 ): void {
   const core = (agent as unknown as { core: { store: GraphStore } }).core;
   Object.assign(core.store, store);
+  if (store.searchMemories) {
+    const searchMemories = store.searchMemories;
+    core.store.searchMemoryCandidates = (embedding, sessionId, limit, options) =>
+      searchMemories(embedding, sessionId, limit, -1, options);
+  }
 }
 
 let originalRun: typeof RetrieverPipeline.prototype.run;
@@ -183,8 +188,8 @@ describe("MemoGrafterAgent.recall", () => {
     expect(calls[0]).toMatchObject({
       embedding: [0.1, 0.2, 0.3],
       sessionId: agent.getSessionId(),
-      limit: 5,
-      minSimilarity: 0.7,
+      limit: 40,
+      minSimilarity: -1,
       options: {
         scope: "session",
         tagMode: "all",
@@ -286,8 +291,8 @@ describe("MemoGrafterAgent.recall", () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({
-      limit: 10,
-      minSimilarity: 0.6,
+      limit: 40,
+      minSimilarity: -1,
     });
   });
 
