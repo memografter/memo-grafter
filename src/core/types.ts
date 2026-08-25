@@ -231,7 +231,11 @@ export interface SessionIngestState {
 }
 
 export interface RetrieverConfig {
+  /** Maximum number of nearest-neighbour candidates fetched before ranking. Default 40. */
+  candidateLimit?: number;
+  /** Maximum number of facts returned after ranking and adaptive selection. Default 10. */
   limit?: number;
+  /** @deprecated Similarity is no longer used as a candidate-generation cutoff. */
   minSimilarity?: number;
   tokenBudget?: number;
   tags?: string[];
@@ -243,6 +247,14 @@ export interface RetrieverConfig {
     similarityWeight?: number;
     /** Default 0.3. Weight applied to memory confidence when ranking retrieved facts. */
     confidenceWeight?: number;
+  };
+  selection?: {
+    /** Maximum number of topic blocks returned. Defaults to `limit`. */
+    maxTopics?: number;
+    /** Keep blocks whose score is at least this fraction of the best score. Default 0.75. */
+    relativeScoreFloor?: number;
+    /** Stop at an adjacent block-score drop at least this large. Default 0.15. */
+    scoreGapThreshold?: number;
   };
   cache?: {
     ttlSeconds?: number;
@@ -285,6 +297,13 @@ export interface RetrievalResult {
   systemPrompt: string;
   tokenCount: number;
   tokenBudget?: number;
+  selection?: {
+    candidateCount: number;
+    rankedCount: number;
+    selectedFactCount: number;
+    selectedTopicCount: number;
+    reason: "exhausted" | "fact-limit" | "topic-limit" | "relative-score" | "score-gap" | "token-budget";
+  };
   /** Topics included because they are pinned in the requested session. */
   pinnedNodes?: TopicNode[];
   /** True when pinned context was compacted to fit its configured budget. */

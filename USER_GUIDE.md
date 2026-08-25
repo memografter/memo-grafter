@@ -271,7 +271,7 @@ await memo.analyze({
 });
 ```
 
-`context()` embeds the query and runs the current graph retrieval path. It returns `facts`, their parent topic `nodes`, a ready-to-inject `systemPrompt`, and token metadata. It always reads fresh graph state: even if recall caching is configured, this method does not read or populate Redis. Retrieval defaults are `limit: 10`, `minSimilarity: 0.6`, and `tokenBudget: 1200`; tag, scope, session, and scoring options are the same as targeted recall. Persistent pinned topics for the requested session are prepended in pin order, use the separately reserved `inject.tokenBudget`, and are described by `pinnedNodes`, `pinnedContextTruncated`, and `pinnedTokenBudget` in the result.
+`context()` embeds the query and runs the current graph retrieval path. It returns `facts`, their parent topic `nodes`, a ready-to-inject `systemPrompt`, and token metadata. It always reads fresh graph state: even if recall caching is configured, this method does not read or populate Redis. Retrieval fetches the nearest 40 candidates by default, ranks them, and adaptively selects up to `limit: 10` facts within `tokenBudget: 1200`; tag, scope, session, and scoring options are the same as targeted recall. Persistent pinned topics for the requested session are prepended in pin order, use the separately reserved `inject.tokenBudget`, and are described by `pinnedNodes`, `pinnedContextTruncated`, and `pinnedTokenBudget` in the result.
 
 `analyze()` accepts one completed, non-empty user-assistant exchange, atomically appends it after the session's durable message buffer, and runs the normal drift detection, extraction, embedding, and graph persistence pipeline. Calls are serialized per session within a process, and the built-in PostgreSQL store uses a session lock so concurrent application instances do not claim the same indexes. If analysis fails after the exchange is stored, the graph cursor remains unchanged and a later append retries the contiguous unprocessed backlog without overwriting messages. Optional tags are applied to the topic and memory rows created from the exchange. Call it only after a response completes; do not also ingest the same exchange through another API.
 
@@ -698,7 +698,11 @@ console.log(result.tokenCount);
 Options:
 
 - `limit`: max memory nodes to fetch before filtering. Defaults to `10`.
-- `minSimilarity`: cosine similarity floor. Defaults to `0.6`.
+- `candidateLimit`: nearest vector candidates considered before ranking. Defaults to `40` and is never lower than `limit`.
+- `minSimilarity`: deprecated compatibility option. Candidate generation no longer applies an absolute similarity cutoff.
+- `selection.maxTopics`: maximum adaptively selected topic blocks. Defaults to `limit`.
+- `selection.relativeScoreFloor`: minimum block score relative to the best block. Defaults to `0.75`.
+- `selection.scoreGapThreshold`: adjacent block-score drop that ends selection. Defaults to `0.15`.
 - `tokenBudget`: max approximate tokens for included fact blocks. Defaults to `1200`.
 - `tags`: optional normalized tag filter.
 - `tagMode`: `"all"` requires every requested tag, `"any"` accepts at least one requested tag. Defaults to `"all"`.
@@ -707,7 +711,7 @@ Options:
 - `scoring.confidenceWeight`: weight applied to memory confidence when ranking retrieved facts. Defaults to `0.3`.
 - `cache.ttlSeconds`: per-call recall cache TTL override when `MemoGrafterConfig.cache` is enabled. Values are clamped to 60-120 seconds.
 
-`recall()` is side-effect free. It does not call `invoke()`, does not trigger a new LLM completion, and does not mutate local history. Your application can call it directly to display memories, add `result.systemPrompt` to a model call, or ignore the result. Retrieval still uses `minSimilarity` for the vector search floor, then ranks returned active facts with `similarity * similarityWeight + confidence * confidenceWeight`.
+`recall()` is side-effect free. It does not call `invoke()`, does not trigger a new LLM completion, and does not mutate local history. Your application can call it directly to display memories, add `result.systemPrompt` to a model call, or ignore the result. Retrieval ranks the nearest active candidates with `similarity * similarityWeight + confidence * confidenceWeight`, groups them by topic, and adaptively selects blocks from the ranked score distribution.
 
 Cross-session tagged recall is explicit:
 
@@ -1339,7 +1343,7 @@ Enables an opt-in Redis cache for targeted recall. MemoGrafter creates one share
 - `connectionString`: Redis URL.
 - `ttlSeconds`: cache TTL in seconds. Defaults to `90` and is clamped between `60` and `120`.
 
-Recall cache keys include the session ID, `limit`, `minSimilarity`, and a deterministic hash of the query embedding. Redis failures are logged as warnings and recall falls back to PostgreSQL search. The cache is disabled unless this section is present.
+Recall cache keys include the session ID, `candidateLimit`, candidate-strategy version, retrieval scope and tags, and a deterministic hash of the query embedding. Redis failures are logged as warnings and recall falls back to PostgreSQL search. The cache is disabled unless this section is present.
 
 When tag-aware recall is used, cache keys also include recall `scope`, `tagMode`, and the normalized tag list. This prevents untagged, session-filtered, and cross-session tagged recall from sharing cached search results.
 

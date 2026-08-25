@@ -90,6 +90,13 @@ export interface GraphStore {
     minSimilarity: number,
     options?: TagFilterOptions,
   ): Promise<(MemoryNode & { similarity: number })[]>;
+  /** Retrieve nearest active memories without applying an absolute similarity cutoff. */
+  searchMemoryCandidates?(
+    embedding: number[],
+    sessionId: string,
+    limit: number,
+    options?: TagFilterOptions,
+  ): Promise<(MemoryNode & { similarity: number })[]>;
   searchMemoriesAcrossSessions(
     embedding: number[],
     sessionIds: string[],

@@ -21,6 +21,7 @@ import { createOperationControl } from "../utils/operationControl.js";
 
 type ScoredMemoryNode = MemoryNode & { similarity: number };
 type RankedMemoryNode = ScoredMemoryNode & { retrievalScore: number };
+type SelectionReason = NonNullable<RetrievalResult["selection"]>["reason"];
 
 interface RetrievedBlock {
   facts: RankedMemoryNode[];
@@ -30,6 +31,9 @@ interface RetrievedBlock {
 
 const DEFAULT_SIMILARITY_WEIGHT = 0.7;
 const DEFAULT_CONFIDENCE_WEIGHT = 0.3;
+const DEFAULT_CANDIDATE_LIMIT = 40;
+const DEFAULT_RELATIVE_SCORE_FLOOR = 0.75;
+const DEFAULT_SCORE_GAP_THRESHOLD = 0.15;
 
 export class RetrieverPipeline {
   constructor(
@@ -48,7 +52,7 @@ export class RetrieverPipeline {
     const warnings: MemoGrafterWarning[] = [];
     try {
     const limit = this.config.limit ?? 10;
-    const minSimilarity = this.config.minSimilarity ?? 0.6;
+    const candidateLimit = Math.max(this.config.candidateLimit ?? DEFAULT_CANDIDATE_LIMIT, limit);
     const tokenBudget = this.config.tokenBudget ?? 1200;
     const tags = normalizeTags(this.config.tags);
     const tagMode = this.config.tagMode ?? "all";
@@ -65,7 +69,7 @@ export class RetrieverPipeline {
     catch (error) { control.throwIfAborted(); throw error; }
     const embedding = validateEmbedding(rawEmbedding, this.embedder.dimensions, "context");
     control.throwIfAborted();
-    const searchedFacts = await this.searchMemories(embedding, sessionId, limit, minSimilarity, {
+    const searchedFacts = await this.searchMemories(embedding, sessionId, candidateLimit, {
       tags,
       tagMode,
       scope,
@@ -74,7 +78,7 @@ export class RetrieverPipeline {
     const activeFacts = searchedFacts
       .filter((fact) => fact.decayed === false && fact.supersededBy == null && !fact.forgotten)
       .map((fact) => this.rankFact(fact))
-      .sort((a, b) => b.retrievalScore - a.retrievalScore);
+      .sort((a, b) => this.compareFacts(a, b));
 
     if (activeFacts.length === 0) {
       return {
@@ -83,6 +87,7 @@ export class RetrieverPipeline {
         systemPrompt: buildFactRetrievalPrompt([]),
         tokenCount: 0,
         tokenBudget,
+        selection: { candidateCount: searchedFacts.length, rankedCount: 0, selectedFactCount: 0, selectedTopicCount: 0, reason: "exhausted" },
         ...(warnings.length ? { degraded: true, warnings } : {}),
       };
     }
@@ -93,22 +98,30 @@ export class RetrieverPipeline {
       scope,
       hasConfiguredSessionIds && (sessionIds.length > 1 || sessionIds[0] !== sessionId),
     ))
-      .sort((a, b) => b.score - a.score);
+      .sort((a, b) => b.score - a.score || a.parentNode.id.localeCompare(b.parentNode.id));
+    const selectedBlocks = this.selectBlocks(rankedBlocks, limit);
     const includedBlocks: string[] = [];
     const facts: ScoredMemoryNode[] = [];
     const nodes: TopicNode[] = [];
     let tokenCount = 0;
 
-    for (const block of rankedBlocks) {
-      const formattedBlock = formatFactBlock(block.facts, block.parentNode);
-      const blockTokenCount = countApproxTokens(formattedBlock);
+    let selectionReason = selectedBlocks.reason;
+    for (const block of selectedBlocks.blocks) {
+      const remainingFactSlots = limit - facts.length;
+      if (remainingFactSlots <= 0) { selectionReason = "fact-limit"; break; }
+      let blockFacts = block.facts.slice(0, remainingFactSlots);
+      let formattedBlock = formatFactBlock(blockFacts, block.parentNode);
+      let blockTokenCount = countApproxTokens(formattedBlock);
 
-      if (tokenCount + blockTokenCount > tokenBudget) {
-        break;
+      while (blockFacts.length > 1 && tokenCount + blockTokenCount > tokenBudget) {
+        blockFacts = blockFacts.slice(0, -1);
+        formattedBlock = formatFactBlock(blockFacts, block.parentNode);
+        blockTokenCount = countApproxTokens(formattedBlock);
       }
+      if (tokenCount + blockTokenCount > tokenBudget) { selectionReason = "token-budget"; continue; }
 
       includedBlocks.push(formattedBlock);
-      facts.push(...block.facts.map(({ retrievalScore: _retrievalScore, ...fact }) => fact));
+      facts.push(...blockFacts.map(({ retrievalScore: _retrievalScore, ...fact }) => fact));
       nodes.push(block.parentNode);
       tokenCount += blockTokenCount;
     }
@@ -119,6 +132,13 @@ export class RetrieverPipeline {
       systemPrompt: buildFactRetrievalPrompt(includedBlocks),
       tokenCount,
       tokenBudget,
+      selection: {
+        candidateCount: searchedFacts.length,
+        rankedCount: activeFacts.length,
+        selectedFactCount: facts.length,
+        selectedTopicCount: nodes.length,
+        reason: selectionReason,
+      },
       ...(warnings.length ? { degraded: true, warnings } : {}),
     };
     } finally {
@@ -130,7 +150,6 @@ export class RetrieverPipeline {
     embedding: number[],
     sessionId: string,
     limit: number,
-    minSimilarity: number,
     options: {
       tags?: string[];
       tagMode?: "all" | "any";
@@ -140,13 +159,7 @@ export class RetrieverPipeline {
     warnings: MemoGrafterWarning[],
   ): Promise<ScoredMemoryNode[]> {
     if (!this.config.cache || !this.cacheRedis) {
-      return this.store.searchMemories(
-        embedding,
-        sessionId,
-        limit,
-        minSimilarity,
-        options,
-      );
+      return this.fetchCandidates(embedding, sessionId, limit, options);
     }
 
     const ttl = Math.min(Math.max(this.config.cache.ttlSeconds ?? 90, 60), 120);
@@ -154,7 +167,7 @@ export class RetrieverPipeline {
       "mg:recall",
       sessionId,
       limit,
-      minSimilarity,
+      "candidates-v1",
       options.scope ?? "session",
       (this.config.sessionIds ?? []).join(","),
       options.tagMode ?? "all",
@@ -174,7 +187,7 @@ export class RetrieverPipeline {
       warnings.push(warning);
       emitWarning(this.diagnostics, warning);
     }
-    const searchedFacts = await this.store.searchMemories(embedding, sessionId, limit, minSimilarity, options);
+    const searchedFacts = await this.fetchCandidates(embedding, sessionId, limit, options);
     try { await this.cacheRedis.setex(cacheKey, ttl, JSON.stringify(searchedFacts)); }
     catch (error: unknown) {
       const warning: MemoGrafterWarning = { code: "CACHE_UNAVAILABLE", operation: "context", context: { sessionId }, cause: error };
@@ -182,6 +195,19 @@ export class RetrieverPipeline {
       emitWarning(this.diagnostics, warning);
     }
     return searchedFacts;
+  }
+
+  private fetchCandidates(
+    embedding: number[],
+    sessionId: string,
+    limit: number,
+    options: Parameters<GraphStore["searchMemories"]>[4],
+  ): Promise<ScoredMemoryNode[]> {
+    if (this.store.searchMemoryCandidates) {
+      return this.store.searchMemoryCandidates(embedding, sessionId, limit, options);
+    }
+    // Compatibility fallback for third-party stores implementing the older contract.
+    return this.store.searchMemories(embedding, sessionId, limit, -1, options);
   }
 
   private hashEmbedding(embedding: number[]): string {
@@ -214,7 +240,7 @@ export class RetrieverPipeline {
       }
 
       blocks.push({
-        facts: topicFacts.sort((a, b) => b.retrievalScore - a.retrievalScore),
+        facts: topicFacts.sort((a, b) => this.compareFacts(a, b)),
         parentNode,
         score: Math.max(...topicFacts.map((fact) => fact.retrievalScore)),
       });
@@ -237,6 +263,52 @@ export class RetrieverPipeline {
     const confidence = this.clampScore(fact.confidence);
 
     return similarity * similarityWeight + confidence * confidenceWeight;
+  }
+
+  private selectBlocks(
+    blocks: RetrievedBlock[],
+    factLimit: number,
+  ): { blocks: RetrievedBlock[]; reason: SelectionReason } {
+    const maxTopics = this.config.selection?.maxTopics ?? factLimit;
+    const relativeFloor = this.config.selection?.relativeScoreFloor ?? DEFAULT_RELATIVE_SCORE_FLOOR;
+    const gapThreshold = this.config.selection?.scoreGapThreshold ?? DEFAULT_SCORE_GAP_THRESHOLD;
+    const selected: RetrievedBlock[] = [];
+    const bestScore = blocks[0]?.score ?? 0;
+    let factCount = 0;
+
+    for (let index = 0; index < blocks.length; index += 1) {
+      const block = blocks[index];
+      if (!block) continue;
+      if (selected.length >= maxTopics) return { blocks: selected, reason: "topic-limit" };
+      if (factCount >= factLimit) return { blocks: selected, reason: "fact-limit" };
+      if (index > 0 && bestScore > 0 && block.score / bestScore < relativeFloor) {
+        return { blocks: selected, reason: "relative-score" };
+      }
+      const previous = blocks[index - 1];
+      if (index > 0 && previous && previous.score - block.score >= gapThreshold) {
+        return { blocks: selected, reason: "score-gap" };
+      }
+      selected.push(block);
+      factCount += block.facts.length;
+    }
+    return { blocks: selected, reason: "exhausted" };
+  }
+
+  private compareFacts(a: RankedMemoryNode, b: RankedMemoryNode): number {
+    return b.retrievalScore - a.retrievalScore
+      || b.similarity - a.similarity
+      || b.confidence - a.confidence
+      || this.timestamp(b.createdAt) - this.timestamp(a.createdAt)
+      || a.id.localeCompare(b.id);
+  }
+
+  private timestamp(value: unknown): number {
+    const timestamp = value instanceof Date
+      ? value.getTime()
+      : typeof value === "string" || typeof value === "number"
+        ? new Date(value).getTime()
+        : 0;
+    return Number.isFinite(timestamp) ? timestamp : 0;
   }
 
   private clampScore(value: number): number {

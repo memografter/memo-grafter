@@ -582,6 +582,9 @@ export class MemoGrafter {
   }
 
   private validateRetrieverOptions(options: RetrieverConfig): void {
+    if (options.candidateLimit !== undefined && (!Number.isInteger(options.candidateLimit) || options.candidateLimit <= 0)) {
+      throw new MemoGrafterError("MemoGrafter context candidateLimit must be a positive integer.", { code: "INPUT_INVALID", operation: "context", retryable: false, context: { field: "candidateLimit" } });
+    }
     if (options.limit !== undefined && (!Number.isInteger(options.limit) || options.limit <= 0)) {
       throw new MemoGrafterError("MemoGrafter context limit must be a positive integer.", { code: "INPUT_INVALID", operation: "context", retryable: false, context: { field: "limit" } });
     }
@@ -590,6 +593,14 @@ export class MemoGrafter {
     }
     if (options.minSimilarity !== undefined && (!Number.isFinite(options.minSimilarity) || options.minSimilarity < 0 || options.minSimilarity > 1)) {
       throw new MemoGrafterError("MemoGrafter context minSimilarity must be between 0 and 1.", { code: "INPUT_INVALID", operation: "context", retryable: false, context: { field: "minSimilarity" } });
+    }
+    if (options.selection?.maxTopics !== undefined && (!Number.isInteger(options.selection.maxTopics) || options.selection.maxTopics <= 0)) {
+      throw new MemoGrafterError("MemoGrafter context selection.maxTopics must be a positive integer.", { code: "INPUT_INVALID", operation: "context", retryable: false, context: { field: "selection.maxTopics" } });
+    }
+    for (const [field, value] of [["selection.relativeScoreFloor", options.selection?.relativeScoreFloor], ["selection.scoreGapThreshold", options.selection?.scoreGapThreshold]] as const) {
+      if (value !== undefined && (!Number.isFinite(value) || value < 0 || value > 1)) {
+        throw new MemoGrafterError(`MemoGrafter context ${field} must be between 0 and 1.`, { code: "INPUT_INVALID", operation: "context", retryable: false, context: { field } });
+      }
     }
   }
 
