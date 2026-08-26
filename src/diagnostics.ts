@@ -15,7 +15,7 @@ export type MemoGrafterErrorCode =
 
 export type MemoGrafterWarningCode =
   | "BEST_EFFORT_OPERATION_FAILED" | "CACHE_UNAVAILABLE" | "EXTRACTION_ITEM_SKIPPED"
-  | "EXTRACTION_FALLBACK_USED" | "BACKGROUND_INGEST_FAILED";
+  | "EXTRACTION_FALLBACK_USED" | "BACKGROUND_INGEST_FAILED" | "QUERY_CONTEXTUALIZATION_FAILED";
 
 export interface IngestionFailureContext {
   sessionId: string;

@@ -1,4 +1,4 @@
-import type { MemoryNode, Message, TopicNode } from "../core/types.js";
+import type { MemoryNode, Message, RetrievalQueryMetadata, TopicNode } from "../core/types.js";
 
 export type InvocationProfile = "memo-grafter-agent" | "fleet-worker";
 export type InvocationHistorySource = "process-local" | "database-backed-preview";
@@ -12,6 +12,7 @@ export interface InvocationRetrievalDetails {
   limit?: number;
   minSimilarity?: number;
   sessionIds?: string[];
+  query?: RetrievalQueryMetadata;
   error?: { message: string; recoverable: boolean };
 }
 

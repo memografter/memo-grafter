@@ -55,7 +55,7 @@ export class WorkerAgent {
       history: this.history,
       historySource: "process-local",
       queryAlreadyInHistory: true,
-      buildMemoryContext: () => this.buildFleetInvocationContext(userMessage),
+      buildMemoryContext: () => this.buildFleetInvocationContext(userMessage, this.history.slice(0, -1)),
     });
     const response = await this.core.llm.complete(plan.request.messages, plan.request.system);
 
@@ -108,6 +108,8 @@ export class WorkerAgent {
         sessionIds: this.resolveMemorySessionIds(mode),
       },
       this.core.recallCache,
+      undefined,
+      this.core.llm,
     );
     return pipeline.run(query, this.sessionId);
   }
@@ -170,7 +172,7 @@ export class WorkerAgent {
     return [this.sessionId];
   }
 
-  private async buildFleetInvocationContext(query: string): Promise<PlannedMemoryContext> {
+  private async buildFleetInvocationContext(query: string, recentMessages: Message[] = []): Promise<PlannedMemoryContext> {
     const { nodes } = await this.core.getTopics(this.sessionId);
     const injected = await this.core.inject(this.sessionId, nodes.map((node) => node.id));
     let recalled: RetrievalResult | null = null;
@@ -178,7 +180,7 @@ export class WorkerAgent {
 
     if (this.memory !== "local") {
       try {
-        recalled = await this.recall(query, { memory: this.memory, limit: 6, minSimilarity: 0.55 });
+        recalled = await this.recall(query, { memory: this.memory, limit: 6, minSimilarity: 0.55, contextualization: { recentMessages } });
       } catch (error: unknown) {
         recallError = error;
         console.warn("MemoGrafter worker fleet recall warning:", error);
@@ -208,6 +210,7 @@ export class WorkerAgent {
         limit: 6,
         minSimilarity: 0.55,
         sessionIds: this.resolveMemorySessionIds(),
+        ...(recalled?.query ? { query: recalled.query } : {}),
         ...(recallError ? {
           error: {
             message: recallError instanceof Error ? recallError.message : String(recallError),

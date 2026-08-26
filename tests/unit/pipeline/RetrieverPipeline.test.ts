@@ -89,6 +89,25 @@ function makeStore(
 }
 
 describe("RetrieverPipeline", () => {
+  it("embeds a contextualized query and does not mutate the graph", async () => {
+    const embed = vi.fn(async () => [0.1, 0.2, 0.3]);
+    const store = makeStore({ searchMemories: vi.fn(async () => []) });
+    const pipeline = new RetrieverPipeline(store, { embed }, {
+      contextualization: {
+        recentMessages: [
+          { role: "user", content: "I want healthy North Indian meals." },
+          { role: "assistant", content: "Consider dal and vegetable sabzi." },
+        ],
+      },
+    }, null, undefined, { complete: async () => "Additional healthy North Indian meal options" });
+
+    const result = await pipeline.run("What else can I eat?", "session-1");
+
+    expect(embed).toHaveBeenCalledWith("Additional healthy North Indian meal options");
+    expect(result.query).toMatchObject({ status: "applied", contextualized: true });
+    expect(store.searchMemories).toHaveBeenCalledOnce();
+    expect(Object.keys(store).filter((key) => /save|insert|append|edge/i.test(key))).toEqual([]);
+  });
   it("returns structured degraded metadata when the optional cache is unavailable", async () => {
     const fact = makeScoredMemoryNode({ memoryType: "fact", subject: "cache", predicate: "is", value: "optional", confidence: 1 });
     const store = makeStore({ searchMemories: vi.fn(async () => [fact]), getTopicNode: async () => makeTopicNode({}) });

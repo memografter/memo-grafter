@@ -686,6 +686,7 @@ console.log(result.facts);
 console.log(result.nodes);
 console.log(result.systemPrompt);
 console.log(result.tokenCount);
+console.log(result.query); // original query, effective retrieval query, and contextualization status
 ```
 
 `recall()` returns a `RetrievalResult`:
@@ -710,8 +711,12 @@ Options:
 - `scoring.similarityWeight`: weight applied to semantic similarity when ranking retrieved facts. Defaults to `0.7`.
 - `scoring.confidenceWeight`: weight applied to memory confidence when ranking retrieved facts. Defaults to `0.3`.
 - `cache.ttlSeconds`: per-call recall cache TTL override when `MemoGrafterConfig.cache` is enabled. Values are clamped to 60-120 seconds.
+- `contextualization.recentMessages`: optional caller-owned recent conversation used to resolve follow-ups such as “what else?” before embedding.
+- `contextualization.maxMessages`: maximum recent messages considered. Defaults to `8`.
+- `contextualization.maxTokens`: approximate context budget. Defaults to `600`.
+- `contextualization.enabled`: explicitly enable or disable rewriting; it defaults to enabled when recent messages are supplied.
 
-`recall()` is side-effect free. It does not call `invoke()`, does not trigger a new LLM completion, and does not mutate local history. Your application can call it directly to display memories, add `result.systemPrompt` to a model call, or ignore the result. Retrieval ranks the nearest active candidates with `similarity * similarityWeight + confidence * confidenceWeight`, groups them by topic, and adaptively selects blocks from the ranked score distribution.
+`recall()` is side-effect free and does not mutate local history or graph state. It does not call an LLM unless contextualization is explicitly supplied and the query appears context-dependent. A rewrite is used only for embedding; the original user message remains authoritative. Your application can call recall directly to display memories, add `result.systemPrompt` to a model call, or ignore the result. Built-in `invoke()` supplies a snapshot of recent completed turns automatically.
 
 Cross-session tagged recall is explicit:
 

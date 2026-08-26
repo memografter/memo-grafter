@@ -16,6 +16,7 @@ export { GrafterPipeline } from "./retrieval/GrafterPipeline.js";
 export { GraftRelevancePipeline } from "./retrieval/GraftRelevancePipeline.js";
 export { IngestPipeline } from "./ingestion/conversation/IngestPipeline.js";
 export { RetrieverPipeline } from "./retrieval/RetrieverPipeline.js";
+export { RetrievalQueryContextualizer, selectRecentMessages } from "./retrieval/RetrievalQueryContextualizer.js";
 export { buildInvocationPlan } from "./invocation/InvocationPlanner.js";
 export { renderInvocationRequestPlainText } from "./invocation/renderInvocationRequest.js";
 export {
@@ -75,6 +76,7 @@ export type {
   PinnedContextResult,
   RememberOptions,
   RetrievalResult,
+  RetrievalQueryMetadata,
   RetrieverConfig,
   SegmentExtractionResult,
   SessionIngestState,

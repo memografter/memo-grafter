@@ -67,6 +67,7 @@
     "live-smoke:maintenance": "tsx --env-file=.env tests/manual/live-smoke/maintenance/run.ts",
     "live-smoke:cache": "tsx --env-file=.env tests/manual/live-smoke/cache/run.ts",
     "live-smoke:external": "tsx --env-file=.env tests/manual/live-smoke/external-application/run.ts",
+    "manual:contextualized-retrieval": "tsx --env-file=.env tests/manual/contextualized-retrieval-query.ts",
     "live-smoke:smoke": "tsx --env-file=.env tests/manual/live-smoke/run.ts",
     "accuracy:memory": "tsx --env-file=.env tests/manual/accuracy/run.ts",
     "accuracy:retrieval-impact": "tsx tests/manual/accuracy/retrieval-candidate-selection-impact.ts"
