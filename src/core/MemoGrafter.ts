@@ -282,7 +282,7 @@ export class MemoGrafter {
   }
 
   private async buildContext(sessionId: string, query: string, options: RetrieverConfig, operationOptions?: MemoGrafterOperationOptions): Promise<RetrievalResult> {
-    const pipeline = new RetrieverPipeline(this.store, this.embedder, options, null, this.diagnostics);
+    const pipeline = new RetrieverPipeline(this.store, this.embedder, options, null, this.diagnostics, this.llm);
     const recalled = await pipeline.run(query, sessionId, operationOptions);
     return this.combinePinnedContext(sessionId, recalled);
   }
@@ -600,6 +600,14 @@ export class MemoGrafter {
     for (const [field, value] of [["selection.relativeScoreFloor", options.selection?.relativeScoreFloor], ["selection.scoreGapThreshold", options.selection?.scoreGapThreshold]] as const) {
       if (value !== undefined && (!Number.isFinite(value) || value < 0 || value > 1)) {
         throw new MemoGrafterError(`MemoGrafter context ${field} must be between 0 and 1.`, { code: "INPUT_INVALID", operation: "context", retryable: false, context: { field } });
+      }
+    }
+    if (options.contextualization?.recentMessages !== undefined && (!Array.isArray(options.contextualization.recentMessages) || options.contextualization.recentMessages.some((message) => !message || (message.role !== "user" && message.role !== "assistant" && message.role !== "system") || typeof message.content !== "string"))) {
+      throw new MemoGrafterError("MemoGrafter context contextualization.recentMessages must contain valid messages.", { code: "INPUT_INVALID", operation: "context", retryable: false, context: { field: "contextualization.recentMessages" } });
+    }
+    for (const [field, value] of [["contextualization.maxMessages", options.contextualization?.maxMessages], ["contextualization.maxTokens", options.contextualization?.maxTokens]] as const) {
+      if (value !== undefined && (!Number.isInteger(value) || value <= 0)) {
+        throw new MemoGrafterError(`MemoGrafter context ${field} must be a positive integer.`, { code: "INPUT_INVALID", operation: "context", retryable: false, context: { field } });
       }
     }
   }

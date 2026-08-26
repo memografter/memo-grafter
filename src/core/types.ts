@@ -259,6 +259,24 @@ export interface RetrieverConfig {
   cache?: {
     ttlSeconds?: number;
   };
+  /** Optional recent conversation used to make an underspecified query standalone before embedding. */
+  contextualization?: {
+    /** Defaults to true when recentMessages are supplied. */
+    enabled?: boolean;
+    recentMessages?: Message[];
+    /** Maximum recent messages considered. Default 8. */
+    maxMessages?: number;
+    /** Approximate token budget for recent messages. Default 600. */
+    maxTokens?: number;
+  };
+}
+
+export interface RetrievalQueryMetadata {
+  original: string;
+  retrieval: string;
+  contextualized: boolean;
+  contextMessageCount: number;
+  status: "not-needed" | "applied" | "fallback" | "disabled";
 }
 
 export interface TagFilterOptions {
@@ -297,6 +315,8 @@ export interface RetrievalResult {
   systemPrompt: string;
   tokenCount: number;
   tokenBudget?: number;
+  /** The original and effective query used for semantic retrieval. */
+  query?: RetrievalQueryMetadata;
   selection?: {
     candidateCount: number;
     rankedCount: number;

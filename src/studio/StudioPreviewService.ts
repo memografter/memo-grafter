@@ -58,7 +58,7 @@ export class PipelineStudioPreviewService implements StudioPreviewService {
     const plan = await buildInvocationPlan(request.sessionId, query, {
       profile, history, historySource: "database-backed-preview",
       ...(profile === "memo-grafter-agent" ? { baseSystemPrompt: this.config.systemPrompt ?? "", recentWindowSize: this.config.inject?.recentWindowSize ?? 20 } : {}),
-      buildMemoryContext: profile === "fleet-worker" ? () => this.buildFleetContext(request) : () => this.buildAgentContext(request.sessionId, query),
+      buildMemoryContext: profile === "fleet-worker" ? () => this.buildFleetContext(request, history) : () => this.buildAgentContext(request.sessionId, query, history),
     });
     this.removeExpiredPlans();
     const previousPlanId = this.activePlanBySession.get(request.sessionId);
@@ -94,7 +94,7 @@ export class PipelineStudioPreviewService implements StudioPreviewService {
     }
   }
 
-  private async buildAgentContext(sessionId: string, query: string): Promise<PlannedMemoryContext> {
+  private async buildAgentContext(sessionId: string, query: string, recentMessages: import("../core/types.js").Message[] = []): Promise<PlannedMemoryContext> {
     const limit = this.config.inject?.recallLimit ?? 6;
     const minSimilarity = this.config.inject?.recallMinSimilarity ?? 0.55;
     if (await this.store.getSessionNodeCount(sessionId) === 0) return this.empty("not-applicable", [sessionId], limit, minSimilarity);
@@ -105,7 +105,7 @@ export class PipelineStudioPreviewService implements StudioPreviewService {
     let recallError: unknown;
     let result: RetrievalResult;
     try {
-      result = await this.recall(query, sessionId, [sessionId], limit, minSimilarity);
+      result = await this.recall(query, sessionId, [sessionId], limit, minSimilarity, recentMessages);
     } catch (error: unknown) {
       recallError = error;
       result = { facts: [], nodes: [], systemPrompt: "", tokenCount: 0 };
@@ -129,6 +129,7 @@ export class PipelineStudioPreviewService implements StudioPreviewService {
           status: recallError ? "failed" : "matched", strategy: "recall",
           topics: [...pinnedTopics, ...recalledNodes],
           memories: [...pinnedMemories, ...recalledFacts], limit, minSimilarity, sessionIds: [sessionId],
+          ...(result.query ? { query: result.query } : {}),
           ...(recallError ? { error: { message: recallError instanceof Error ? recallError.message : String(recallError), recoverable: true } } : {}),
         },
         memoryContext: {
@@ -143,7 +144,7 @@ export class PipelineStudioPreviewService implements StudioPreviewService {
       };
   }
 
-  private async buildFleetContext(request: StudioPreviewRequest): Promise<PlannedMemoryContext> {
+  private async buildFleetContext(request: StudioPreviewRequest, recentMessages: import("../core/types.js").Message[] = []): Promise<PlannedMemoryContext> {
     const mode = request.fleetMemoryMode ?? "local";
     const nodes = await this.store.getNodesBySession(request.sessionId);
     const injected = await this.grafter.run(request.sessionId, nodes.map((node) => node.id));
@@ -154,7 +155,7 @@ export class PipelineStudioPreviewService implements StudioPreviewService {
     let recallError: unknown;
     if (mode !== "local") {
       if (!sharedSessionId) recallError = new Error("Fleet shared session could not be inferred; provide sharedSessionId.");
-      else try { recalled = await this.recall(request.query, request.sessionId, sessionIds, 6, 0.55); } catch (error: unknown) { recallError = error; }
+      else try { recalled = await this.recall(request.query, request.sessionId, sessionIds, 6, 0.55, recentMessages); } catch (error: unknown) { recallError = error; }
     }
     const recallPrompt = recalled?.facts.length ? recalled.systemPrompt : "";
     const content = [injected.systemPrompt, recallPrompt].filter(Boolean).join("\n\n");
@@ -164,6 +165,7 @@ export class PipelineStudioPreviewService implements StudioPreviewService {
         status: recallError ? "failed" : content ? "matched" : nodes.length ? "no-match" : "not-applicable", strategy: "fleet-combined",
         topics: [...injected.nodes, ...(recalled?.nodes ?? [])].filter((node, index, all) => all.findIndex((item) => item.id === node.id) === index),
         memories: [...(injected.memories ?? []), ...(recalled?.facts ?? [])], limit: 6, minSimilarity: 0.55, sessionIds,
+        ...(recalled?.query ? { query: recalled.query } : {}),
         ...(recallError ? { error: { message: recallError instanceof Error ? recallError.message : String(recallError), recoverable: true } } : {}),
       },
       memoryContext: {
@@ -176,8 +178,8 @@ export class PipelineStudioPreviewService implements StudioPreviewService {
     };
   }
 
-  private recall(query: string, sessionId: string, sessionIds: string[], limit: number, minSimilarity: number) {
-    return new RetrieverPipeline(this.store, this.embedder, { limit, minSimilarity, sessionIds }).run(query, sessionId);
+  private recall(query: string, sessionId: string, sessionIds: string[], limit: number, minSimilarity: number, recentMessages: import("../core/types.js").Message[] = []) {
+    return new RetrieverPipeline(this.store, this.embedder, { limit, minSimilarity, sessionIds, contextualization: { recentMessages } }, null, undefined, this.config.llm).run(query, sessionId);
   }
   private fromRecall(result: RetrievalResult, sessionIds: string[], limit: number, minSimilarity: number): PlannedMemoryContext {
     return { placement: "message", retrieval: { status: "matched", strategy: "recall", topics: result.nodes, memories: result.facts, limit, minSimilarity, sessionIds }, memoryContext: { content: result.systemPrompt, tokenCount: result.tokenCount, ...(result.tokenBudget !== undefined ? { tokenBudget: result.tokenBudget } : {}) } };

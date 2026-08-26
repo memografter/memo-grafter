@@ -90,7 +90,7 @@ export class MemoGrafterAgent {
       buildMemoryContext: () => this._buildMemoryContext(userMessage, {
         limit: this.recallLimit,
         minSimilarity: this.recallMinSimilarity,
-      }),
+      }, [...this.history]),
     });
     let response: string;
     try {
@@ -330,6 +330,8 @@ export class MemoGrafterAgent {
         ...(cacheConfig !== undefined ? { cache: cacheConfig } : {}),
       },
       this.core.recallCache,
+      undefined,
+      this.core.llm,
     );
     return pipeline.run(query, this.getSessionId());
   }
@@ -367,6 +369,7 @@ export class MemoGrafterAgent {
   private async _buildMemoryContext(
     query: string,
     options: { limit: number; minSimilarity: number },
+    recentMessages: Message[] = [],
   ): Promise<PlannedMemoryContext> {
     const empty = (status: "not-applicable" | "no-match" | "failed", error?: unknown): PlannedMemoryContext => ({
       placement: "message",
@@ -391,6 +394,7 @@ export class MemoGrafterAgent {
       recalled = await this.recall(query, {
         limit: options.limit,
         minSimilarity: options.minSimilarity,
+        contextualization: { recentMessages },
       });
     } catch (error: unknown) {
       recallError = error;
@@ -412,6 +416,7 @@ export class MemoGrafterAgent {
           limit: options.limit,
           minSimilarity: options.minSimilarity,
           sessionIds: [this.sessionId],
+          ...(result.query ? { query: result.query } : {}),
           ...(recallError ? { error: { message: recallError instanceof Error ? recallError.message : String(recallError), recoverable: true } } : {}),
         },
         memoryContext: {

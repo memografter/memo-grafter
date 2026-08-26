@@ -12,12 +12,14 @@ import type {
   RetrieverConfig,
   MemoGrafterOperationOptions,
   TopicNode,
+  LLMAdapter,
 } from "../core/types.js";
 import { countApproxTokens } from "../utils/text/tokenCount.js";
 import { normalizeTags } from "../utils/tags.js";
 import { validateEmbedding } from "../adapters/validation.js";
 import { emitWarning, type MemoGrafterDiagnostics, type MemoGrafterWarning } from "../diagnostics.js";
 import { createOperationControl } from "../utils/operationControl.js";
+import { RetrievalQueryContextualizer } from "./RetrievalQueryContextualizer.js";
 
 type ScoredMemoryNode = MemoryNode & { similarity: number };
 type RankedMemoryNode = ScoredMemoryNode & { retrievalScore: number };
@@ -45,6 +47,7 @@ export class RetrieverPipeline {
     /** @internal */
     private cacheRedis: Redis | null = null,
     private diagnostics?: MemoGrafterDiagnostics,
+    private contextualizerLlm?: LLMAdapter,
   ) {}
 
   async run(query: string, sessionId: string, options?: MemoGrafterOperationOptions): Promise<RetrievalResult> {
@@ -63,9 +66,16 @@ export class RetrieverPipeline {
     const sessionIds = this.resolveSessionIds(sessionId);
     const hasConfiguredSessionIds = configuredSessionIds.length > 0;
 
+    const contextualized = await new RetrievalQueryContextualizer(this.contextualizerLlm).run(query, this.config.contextualization);
+    if (contextualized.warning) {
+      const warning: MemoGrafterWarning = { code: "QUERY_CONTEXTUALIZATION_FAILED", operation: "context", stage: "provider-request", context: { sessionId }, cause: contextualized.warning };
+      warnings.push(warning);
+      emitWarning(this.diagnostics, warning);
+    }
+
     control.throwIfAborted();
     let rawEmbedding: number[];
-    try { rawEmbedding = options ? await this.embedder.embed(query, { signal: control.signal }) : await this.embedder.embed(query); }
+    try { rawEmbedding = options ? await this.embedder.embed(contextualized.metadata.retrieval, { signal: control.signal }) : await this.embedder.embed(contextualized.metadata.retrieval); }
     catch (error) { control.throwIfAborted(); throw error; }
     const embedding = validateEmbedding(rawEmbedding, this.embedder.dimensions, "context");
     control.throwIfAborted();
@@ -87,6 +97,7 @@ export class RetrieverPipeline {
         systemPrompt: buildFactRetrievalPrompt([]),
         tokenCount: 0,
         tokenBudget,
+        query: contextualized.metadata,
         selection: { candidateCount: searchedFacts.length, rankedCount: 0, selectedFactCount: 0, selectedTopicCount: 0, reason: "exhausted" },
         ...(warnings.length ? { degraded: true, warnings } : {}),
       };
@@ -132,6 +143,7 @@ export class RetrieverPipeline {
       systemPrompt: buildFactRetrievalPrompt(includedBlocks),
       tokenCount,
       tokenBudget,
+      query: contextualized.metadata,
       selection: {
         candidateCount: searchedFacts.length,
         rankedCount: activeFacts.length,

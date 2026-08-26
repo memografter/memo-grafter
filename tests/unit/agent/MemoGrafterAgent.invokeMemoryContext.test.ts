@@ -204,7 +204,16 @@ describe("MemoGrafterAgent.invoke memory context", () => {
 
     expect(privateAgent.recall).toHaveBeenLastCalledWith(
       "Suggest a reflective blog intro for my Japan trip.",
-      { limit: 3, minSimilarity: 0.7 },
+      {
+        limit: 3,
+        minSimilarity: 0.7,
+        contextualization: {
+          recentMessages: [
+            { role: "user", content: "Earlier turn." },
+            { role: "assistant", content: "Response to: Earlier turn." },
+          ],
+        },
+      },
     );
     expect(llm.calls[0]?.messages).toEqual([
       { role: "system", content: "Relevant memory" },

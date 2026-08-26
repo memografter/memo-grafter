@@ -78,6 +78,30 @@ describe("MemoGrafter external application APIs", () => {
     expect(llm.complete).not.toHaveBeenCalled();
   });
 
+  it("uses explicit recent messages to contextualize an external retrieval query", async () => {
+    const { memo, llm, embedder } = createMemo();
+    llm.complete = vi.fn(async () => "Additional healthy North Indian food options");
+    (memo as unknown as { store: Partial<GraphStore> }).store = {
+      searchMemories: vi.fn(async () => []),
+      getPinnedTopics: vi.fn(async () => []),
+      getMemoriesBySession: vi.fn(async () => []),
+    };
+
+    const result = await memo.context({
+      sessionId: "session-1",
+      query: "What else can I eat?",
+      contextualization: {
+        recentMessages: [
+          { role: "user", content: "I want healthy North Indian food." },
+          { role: "assistant", content: "Try dal and vegetable sabzi." },
+        ],
+      },
+    });
+
+    expect(embedder.embed).toHaveBeenCalledWith("Additional healthy North Indian food options");
+    expect(result.query).toMatchObject({ status: "applied", contextualized: true, contextMessageCount: 2 });
+  });
+
   it("places multiple pinned topics before recall context in pin order", async () => {
     const { memo } = createMemo();
     const topics = ["Planning", "Deployment"].map((label, index) => ({
@@ -105,5 +129,6 @@ describe("MemoGrafter external application APIs", () => {
     expect(() => memo.context({ sessionId: "session-1", query: "query", limit: 0 })).toThrow("limit");
     expect(() => memo.context({ sessionId: "session-1", query: "query", tokenBudget: -1 })).toThrow("tokenBudget");
     expect(() => memo.context({ sessionId: "session-1", query: "query", minSimilarity: 2 })).toThrow("minSimilarity");
+    expect(() => memo.context({ sessionId: "session-1", query: "query", contextualization: { maxMessages: 0 } })).toThrow("maxMessages");
   });
 });
