@@ -271,7 +271,7 @@ await memo.analyze({
 });
 ```
 
-`context()` embeds the query and runs the current graph retrieval path. It returns `facts`, their parent topic `nodes`, a ready-to-inject `systemPrompt`, and token metadata. It always reads fresh graph state: even if recall caching is configured, this method does not read or populate Redis. Retrieval fetches the nearest 40 candidates by default, ranks them, and adaptively selects up to `limit: 10` facts within `tokenBudget: 1200`; tag, scope, session, and scoring options are the same as targeted recall. Persistent pinned topics for the requested session are prepended in pin order, use the separately reserved `inject.tokenBudget`, and are described by `pinnedNodes`, `pinnedContextTruncated`, and `pinnedTokenBudget` in the result.
+`context()` embeds the query and runs the current graph retrieval path. It searches memory and topic embeddings in parallel, allowing either source to introduce a topic before the existing adaptive selection stage. Direct topic matches contribute their summary and a bounded set of active child memories. It returns `facts`, selected topic `nodes`, a ready-to-inject `systemPrompt`, source diagnostics in `topicMatches`, and token metadata. It always reads fresh graph state: even if recall caching is configured, this method does not read or populate Redis.
 
 `analyze()` accepts one completed, non-empty user-assistant exchange, atomically appends it after the session's durable message buffer, and runs the normal drift detection, extraction, embedding, and graph persistence pipeline. Calls are serialized per session within a process, and the built-in PostgreSQL store uses a session lock so concurrent application instances do not claim the same indexes. If analysis fails after the exchange is stored, the graph cursor remains unchanged and a later append retries the contiguous unprocessed backlog without overwriting messages. Optional tags are applied to the topic and memory rows created from the exchange. Call it only after a response completes; do not also ingest the same exchange through another API.
 
@@ -689,12 +689,14 @@ console.log(result.tokenCount);
 console.log(result.query); // original query, effective retrieval query, and contextualization status
 ```
 
-`recall()` returns a `RetrievalResult`:
+`recall()` returns a `RetrievalResult`. Memory and topic embeddings are searched in parallel and deduplicated into one ranked set of topic blocks:
 
 - `facts`: matching memory nodes with a `similarity` score.
 - `nodes`: parent topic nodes for the included facts.
 - `systemPrompt`: a formatted memory block that can be passed to an LLM if you choose.
 - `tokenCount`: approximate token count for the included fact blocks.
+- `topicMatches`: selected topic IDs, their entry source (`"memory"`, `"topic"`, or both), and block score.
+- `selection.memoryCandidateCount` / `topicCandidateCount`: candidate counts from each vector source.
 
 Options:
 
@@ -1343,7 +1345,7 @@ cache: {
 }
 ```
 
-Enables an opt-in Redis cache for targeted recall. MemoGrafter creates one shared Redis client and uses it to cache only the raw `searchMemories()` result. It does not cache final prompts, filtered blocks, or `RetrievalResult`, so different `tokenBudget` values still assemble fresh output.
+Enables an opt-in Redis cache for targeted recall. MemoGrafter creates one shared Redis client and caches only raw memory and topic candidate results. It does not cache hydrated topic blocks, final prompts, or `RetrievalResult`, so different `tokenBudget` values still assemble fresh output.
 
 - `connectionString`: Redis URL.
 - `ttlSeconds`: cache TTL in seconds. Defaults to `90` and is clamped between `60` and `120`.
@@ -1503,7 +1505,7 @@ Breaking changes to pipeline internals may occur in minor versions.
 Available pipeline exports:
 
 - `IngestPipeline`: incrementally segments new messages, builds topic nodes, extracts memory nodes, and writes graph edges.
-- `RetrieverPipeline`: embeds a query, searches memory nodes, and returns a structured `RetrievalResult`.
+- `RetrieverPipeline`: embeds a query once, searches memory and topic nodes in parallel, and returns a structured `RetrievalResult`.
 - `GrafterPipeline`: traverses the topic graph and assembles a token-budget-fitted system prompt.
 
 Example using `RetrieverPipeline` directly:

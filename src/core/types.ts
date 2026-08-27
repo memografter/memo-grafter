@@ -319,11 +319,20 @@ export interface RetrievalResult {
   query?: RetrievalQueryMetadata;
   selection?: {
     candidateCount: number;
+    memoryCandidateCount: number;
+    topicCandidateCount: number;
     rankedCount: number;
     selectedFactCount: number;
     selectedTopicCount: number;
+    topicOnlyMatchCount: number;
     reason: "exhausted" | "fact-limit" | "topic-limit" | "relative-score" | "score-gap" | "token-budget";
   };
+  /** Explains which vector source allowed each selected topic to enter retrieval. */
+  topicMatches?: Array<{
+    topicId: string;
+    matchedBy: Array<"memory" | "topic">;
+    score: number;
+  }>;
   /** Topics included because they are pinned in the requested session. */
   pinnedNodes?: TopicNode[];
   /** True when pinned context was compacted to fit its configured budget. */

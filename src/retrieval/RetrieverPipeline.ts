@@ -20,15 +20,23 @@ import { validateEmbedding } from "../adapters/validation.js";
 import { emitWarning, type MemoGrafterDiagnostics, type MemoGrafterWarning } from "../diagnostics.js";
 import { createOperationControl } from "../utils/operationControl.js";
 import { RetrievalQueryContextualizer } from "./RetrievalQueryContextualizer.js";
+import { cosineSimilarity } from "../utils/drift/cosineSimilarity.js";
 
 type ScoredMemoryNode = MemoryNode & { similarity: number };
 type RankedMemoryNode = ScoredMemoryNode & { retrievalScore: number };
+type ScoredTopicNode = TopicNode & { similarity: number };
 type SelectionReason = NonNullable<RetrievalResult["selection"]>["reason"];
+
+interface CandidateSearchResult {
+  memories: ScoredMemoryNode[];
+  topics: ScoredTopicNode[];
+}
 
 interface RetrievedBlock {
   facts: RankedMemoryNode[];
   parentNode: TopicNode;
   score: number;
+  matchedBy: Array<"memory" | "topic">;
 }
 
 const DEFAULT_SIMILARITY_WEIGHT = 0.7;
@@ -36,6 +44,7 @@ const DEFAULT_CONFIDENCE_WEIGHT = 0.3;
 const DEFAULT_CANDIDATE_LIMIT = 40;
 const DEFAULT_RELATIVE_SCORE_FLOOR = 0.75;
 const DEFAULT_SCORE_GAP_THRESHOLD = 0.15;
+const DEFAULT_TOPIC_MEMORY_LIMIT = 3;
 
 export class RetrieverPipeline {
   constructor(
@@ -79,18 +88,24 @@ export class RetrieverPipeline {
     catch (error) { control.throwIfAborted(); throw error; }
     const embedding = validateEmbedding(rawEmbedding, this.embedder.dimensions, "context");
     control.throwIfAborted();
-    const searchedFacts = await this.searchMemories(embedding, sessionId, candidateLimit, {
+    const searched = await this.searchCandidates(embedding, sessionId, candidateLimit, {
       tags,
       tagMode,
       scope,
       ...(hasConfiguredSessionIds ? { sessionIds } : {}),
     }, warnings);
-    const activeFacts = searchedFacts
+    const activeFacts = searched.memories
       .filter((fact) => fact.decayed === false && fact.supersededBy == null && !fact.forgotten)
       .map((fact) => this.rankFact(fact))
       .sort((a, b) => this.compareFacts(a, b));
+    const activeTopics = searched.topics
+      .filter((topic) => !topic.suppressed
+        && (hasConfiguredSessionIds ? sessionIds.includes(topic.sessionId) : scope === "tagged" || topic.sessionId === sessionId)
+        && this.matchesTags(topic.tags, tags, tagMode))
+      .map((topic) => ({ ...topic, similarity: this.clampScore(topic.similarity) }))
+      .sort((a, b) => b.similarity - a.similarity || this.timestamp(b.createdAt) - this.timestamp(a.createdAt) || a.id.localeCompare(b.id));
 
-    if (activeFacts.length === 0) {
+    if (activeFacts.length === 0 && activeTopics.length === 0) {
       return {
         facts: [],
         nodes: [],
@@ -98,13 +113,15 @@ export class RetrieverPipeline {
         tokenCount: 0,
         tokenBudget,
         query: contextualized.metadata,
-        selection: { candidateCount: searchedFacts.length, rankedCount: 0, selectedFactCount: 0, selectedTopicCount: 0, reason: "exhausted" },
+        selection: { candidateCount: searched.memories.length + searched.topics.length, memoryCandidateCount: searched.memories.length, topicCandidateCount: searched.topics.length, rankedCount: 0, selectedFactCount: 0, selectedTopicCount: 0, topicOnlyMatchCount: 0, reason: "exhausted" },
         ...(warnings.length ? { degraded: true, warnings } : {}),
       };
     }
 
     const rankedBlocks = (await this.buildBlocks(
       activeFacts,
+      activeTopics,
+      embedding,
       sessionId,
       scope,
       hasConfiguredSessionIds && (sessionIds.length > 1 || sessionIds[0] !== sessionId),
@@ -114,12 +131,13 @@ export class RetrieverPipeline {
     const includedBlocks: string[] = [];
     const facts: ScoredMemoryNode[] = [];
     const nodes: TopicNode[] = [];
+    const includedMatches: NonNullable<RetrievalResult["topicMatches"]> = [];
     let tokenCount = 0;
 
     let selectionReason = selectedBlocks.reason;
     for (const block of selectedBlocks.blocks) {
-      const remainingFactSlots = limit - facts.length;
-      if (remainingFactSlots <= 0) { selectionReason = "fact-limit"; break; }
+      const remainingFactSlots = Math.max(0, limit - facts.length);
+      if (remainingFactSlots === 0 && block.facts.length > 0) { selectionReason = "fact-limit"; continue; }
       let blockFacts = block.facts.slice(0, remainingFactSlots);
       let formattedBlock = formatFactBlock(blockFacts, block.parentNode);
       let blockTokenCount = countApproxTokens(formattedBlock);
@@ -134,6 +152,7 @@ export class RetrieverPipeline {
       includedBlocks.push(formattedBlock);
       facts.push(...blockFacts.map(({ retrievalScore: _retrievalScore, ...fact }) => fact));
       nodes.push(block.parentNode);
+      includedMatches.push({ topicId: block.parentNode.id, matchedBy: block.matchedBy, score: block.score });
       tokenCount += blockTokenCount;
     }
 
@@ -145,12 +164,16 @@ export class RetrieverPipeline {
       tokenBudget,
       query: contextualized.metadata,
       selection: {
-        candidateCount: searchedFacts.length,
-        rankedCount: activeFacts.length,
+        candidateCount: searched.memories.length + searched.topics.length,
+        memoryCandidateCount: searched.memories.length,
+        topicCandidateCount: searched.topics.length,
+        rankedCount: activeFacts.length + activeTopics.length,
         selectedFactCount: facts.length,
         selectedTopicCount: nodes.length,
+        topicOnlyMatchCount: includedMatches.filter((match) => match.matchedBy.length === 1 && match.matchedBy[0] === "topic").length,
         reason: selectionReason,
       },
+      topicMatches: includedMatches,
       ...(warnings.length ? { degraded: true, warnings } : {}),
     };
     } finally {
@@ -158,7 +181,7 @@ export class RetrieverPipeline {
     }
   }
 
-  private async searchMemories(
+  private async searchCandidates(
     embedding: number[],
     sessionId: string,
     limit: number,
@@ -169,7 +192,7 @@ export class RetrieverPipeline {
       sessionIds?: string[];
     },
     warnings: MemoGrafterWarning[],
-  ): Promise<ScoredMemoryNode[]> {
+  ): Promise<CandidateSearchResult> {
     if (!this.config.cache || !this.cacheRedis) {
       return this.fetchCandidates(embedding, sessionId, limit, options);
     }
@@ -179,7 +202,7 @@ export class RetrieverPipeline {
       "mg:recall",
       sessionId,
       limit,
-      "candidates-v1",
+      "candidates-v2",
       options.scope ?? "session",
       (this.config.sessionIds ?? []).join(","),
       options.tagMode ?? "all",
@@ -191,7 +214,7 @@ export class RetrieverPipeline {
       const hit = await this.cacheRedis.get(cacheKey);
 
       if (hit) {
-        return JSON.parse(hit) as ScoredMemoryNode[];
+        return JSON.parse(hit) as CandidateSearchResult;
       }
 
     } catch (error: unknown) {
@@ -199,27 +222,30 @@ export class RetrieverPipeline {
       warnings.push(warning);
       emitWarning(this.diagnostics, warning);
     }
-    const searchedFacts = await this.fetchCandidates(embedding, sessionId, limit, options);
-    try { await this.cacheRedis.setex(cacheKey, ttl, JSON.stringify(searchedFacts)); }
+    const searched = await this.fetchCandidates(embedding, sessionId, limit, options);
+    try { await this.cacheRedis.setex(cacheKey, ttl, JSON.stringify(searched)); }
     catch (error: unknown) {
       const warning: MemoGrafterWarning = { code: "CACHE_UNAVAILABLE", operation: "context", context: { sessionId }, cause: error };
       warnings.push(warning);
       emitWarning(this.diagnostics, warning);
     }
-    return searchedFacts;
+    return searched;
   }
 
-  private fetchCandidates(
+  private async fetchCandidates(
     embedding: number[],
     sessionId: string,
     limit: number,
     options: Parameters<GraphStore["searchMemories"]>[4],
-  ): Promise<ScoredMemoryNode[]> {
-    if (this.store.searchMemoryCandidates) {
-      return this.store.searchMemoryCandidates(embedding, sessionId, limit, options);
-    }
-    // Compatibility fallback for third-party stores implementing the older contract.
-    return this.store.searchMemories(embedding, sessionId, limit, -1, options);
+  ): Promise<CandidateSearchResult> {
+    const memorySearch = this.store.searchMemoryCandidates
+      ? this.store.searchMemoryCandidates(embedding, sessionId, limit, options)
+      : this.store.searchMemories(embedding, sessionId, limit, -1, options);
+    const topicSearch = this.store.searchTopicCandidates
+      ? this.store.searchTopicCandidates(embedding, sessionId, limit, options)
+      : Promise.resolve([]);
+    const [memories, topics] = await Promise.all([memorySearch, topicSearch]);
+    return { memories, topics };
   }
 
   private hashEmbedding(embedding: number[]): string {
@@ -229,6 +255,8 @@ export class RetrieverPipeline {
 
   private async buildBlocks(
     facts: RankedMemoryNode[],
+    topics: ScoredTopicNode[],
+    queryEmbedding: number[],
     sessionId: string,
     scope: "session" | "session-and-tags" | "tagged",
     useFactSession: boolean,
@@ -240,25 +268,68 @@ export class RetrieverPipeline {
       topicFacts.push(fact);
       factsByTopic.set(fact.topicNodeId, topicFacts);
     }
+    const topicCandidates = new Map(topics.map((topic) => [topic.id, topic]));
+    const topicIds = new Set([...factsByTopic.keys(), ...topicCandidates.keys()]);
+    const parentNodes = new Map<string, TopicNode>();
+    for (const topic of topics) parentNodes.set(topic.id, topic);
 
-    const blocks: RetrievedBlock[] = [];
-
-    for (const [topicNodeId, topicFacts] of factsByTopic) {
+    await Promise.all([...factsByTopic.entries()].map(async ([topicNodeId, topicFacts]) => {
+      if (parentNodes.has(topicNodeId)) return;
       const parentSessionId = scope === "tagged" || useFactSession ? topicFacts[0]?.sessionId : sessionId;
       const parentNode = await this.store.getTopicNode(topicNodeId, parentSessionId);
+      if (parentNode && !parentNode.suppressed) parentNodes.set(topicNodeId, parentNode);
+    }));
 
-      if (!parentNode || parentNode.suppressed) {
-        continue;
-      }
+    const directTopicIds = topics.map((topic) => topic.id);
+    const hydrated = await this.hydrateTopicMemories(directTopicIds, topics.map((topic) => topic.sessionId));
+    for (const memory of hydrated) {
+      const parentNode = parentNodes.get(memory.topicNodeId);
+      if (!parentNode || memory.sessionId !== parentNode.sessionId || memory.forgotten || memory.decayed || memory.supersededBy != null) continue;
+      const existing = factsByTopic.get(memory.topicNodeId) ?? [];
+      if (existing.some((fact) => fact.id === memory.id)) continue;
+      const similarity = this.clampScore(cosineSimilarity(queryEmbedding, memory.embedding));
+      existing.push(this.rankFact({ ...memory, similarity }));
+      factsByTopic.set(memory.topicNodeId, existing);
+    }
 
+    const blocks: RetrievedBlock[] = [];
+    for (const topicNodeId of topicIds) {
+      const parentNode = parentNodes.get(topicNodeId);
+      if (!parentNode || parentNode.suppressed) continue;
+      const topicCandidate = topicCandidates.get(topicNodeId);
+      const memoryEntryFacts = facts.filter((fact) => fact.topicNodeId === topicNodeId);
+      const memoryMatched = memoryEntryFacts.length > 0;
+      const directFactIds = new Set(memoryEntryFacts.map((fact) => fact.id));
+      const hydratedFacts = (factsByTopic.get(topicNodeId) ?? [])
+        .filter((fact) => !directFactIds.has(fact.id))
+        .sort((a, b) => this.compareFacts(a, b))
+        .slice(0, topicCandidate ? DEFAULT_TOPIC_MEMORY_LIMIT : 0);
+      const topicFacts = [...memoryEntryFacts, ...hydratedFacts].sort((a, b) => this.compareFacts(a, b));
+      const scores = memoryEntryFacts.map((fact) => fact.retrievalScore);
+      if (topicCandidate) scores.push(topicCandidate.similarity);
+      if (scores.length === 0) continue;
       blocks.push({
-        facts: topicFacts.sort((a, b) => this.compareFacts(a, b)),
+        facts: topicFacts,
         parentNode,
-        score: Math.max(...topicFacts.map((fact) => fact.retrievalScore)),
+        score: Math.max(...scores),
+        matchedBy: [
+          ...(memoryMatched ? ["memory" as const] : []),
+          ...(topicCandidate ? ["topic" as const] : []),
+        ],
       });
     }
 
     return blocks;
+  }
+
+  private async hydrateTopicMemories(topicIds: string[], sessionIds: string[]): Promise<MemoryNode[]> {
+    if (topicIds.length === 0) return [];
+    const uniqueSessionIds = [...new Set(sessionIds)];
+    if (this.store.getActiveMemoriesByTopicIds) {
+      return this.store.getActiveMemoriesByTopicIds(topicIds, uniqueSessionIds);
+    }
+    const memories = await Promise.all(topicIds.map((topicId) => this.store.getMemoriesByTopic(topicId)));
+    return memories.flat();
   }
 
   private rankFact(fact: ScoredMemoryNode): RankedMemoryNode {
@@ -292,7 +363,7 @@ export class RetrieverPipeline {
       const block = blocks[index];
       if (!block) continue;
       if (selected.length >= maxTopics) return { blocks: selected, reason: "topic-limit" };
-      if (factCount >= factLimit) return { blocks: selected, reason: "fact-limit" };
+      if (factCount >= factLimit && block.facts.length > 0) continue;
       if (index > 0 && bestScore > 0 && block.score / bestScore < relativeFloor) {
         return { blocks: selected, reason: "relative-score" };
       }
@@ -326,6 +397,14 @@ export class RetrieverPipeline {
   private clampScore(value: number): number {
     if (!Number.isFinite(value)) return 0;
     return Math.min(Math.max(value, 0), 1);
+  }
+
+  private matchesTags(candidateTags: string[] | undefined, requestedTags: string[], tagMode: "all" | "any"): boolean {
+    if (requestedTags.length === 0) return true;
+    const available = new Set(normalizeTags(candidateTags));
+    return tagMode === "any"
+      ? requestedTags.some((tag) => available.has(tag))
+      : requestedTags.every((tag) => available.has(tag));
   }
 
   private resolveSessionIds(sessionId: string): string[] {

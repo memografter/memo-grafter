@@ -83,6 +83,8 @@ export interface GraphStore {
   insertMemories(nodes: MemoryNodeInsert[]): Promise<void>;
   getMemoriesBySegment(segmentId: string): Promise<MemoryNode[]>;
   getMemoriesByTopic(topicNodeId: string): Promise<MemoryNode[]>;
+  /** Batch-load active memories for topic candidates. Optional for custom-store compatibility. */
+  getActiveMemoriesByTopicIds?(topicNodeIds: string[], sessionIds?: string[]): Promise<MemoryNode[]>;
   searchMemories(
     embedding: number[],
     sessionId: string,
@@ -97,6 +99,13 @@ export interface GraphStore {
     limit: number,
     options?: TagFilterOptions,
   ): Promise<(MemoryNode & { similarity: number })[]>;
+  /** Retrieve nearest active topics without applying an absolute similarity cutoff. */
+  searchTopicCandidates?(
+    embedding: number[],
+    sessionId: string,
+    limit: number,
+    options?: TagFilterOptions,
+  ): Promise<(TopicNode & { similarity: number })[]>;
   searchMemoriesAcrossSessions(
     embedding: number[],
     sessionIds: string[],
