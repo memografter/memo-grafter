@@ -78,6 +78,10 @@ function makeEmbedder(vector = [0.1, 0.2, 0.3]): EmbedAdapter {
 function makeStore(
   overrides: Partial<{
     searchMemories: GraphStore["searchMemories"];
+    searchMemoryCandidates: NonNullable<GraphStore["searchMemoryCandidates"]>;
+    searchTopicCandidates: NonNullable<GraphStore["searchTopicCandidates"]>;
+    getActiveMemoriesByTopicIds: NonNullable<GraphStore["getActiveMemoriesByTopicIds"]>;
+    getMemoriesByTopic: GraphStore["getMemoriesByTopic"];
     getTopicNode: GraphStore["getTopicNode"];
   }> = {},
 ): GraphStore {
@@ -89,6 +93,53 @@ function makeStore(
 }
 
 describe("RetrieverPipeline", () => {
+  it("searches memory and topic embeddings in parallel with the same query embedding", async () => {
+    let releaseMemory!: () => void;
+    const memoryPending = new Promise<void>((resolve) => { releaseMemory = resolve; });
+    const memorySearch = vi.fn(async () => { await memoryPending; return []; });
+    const topicSearch = vi.fn(async () => { releaseMemory(); return []; });
+    const store = makeStore({ searchMemoryCandidates: memorySearch, searchTopicCandidates: topicSearch });
+
+    await new RetrieverPipeline(store, makeEmbedder([0.4, 0.5]), {}).run("query", "session-1");
+
+    expect(memorySearch).toHaveBeenCalledWith([0.4, 0.5], "session-1", 40, { tags: [], tagMode: "all", scope: "session" });
+    expect(topicSearch).toHaveBeenCalledWith([0.4, 0.5], "session-1", 40, { tags: [], tagMode: "all", scope: "session" });
+  });
+
+  it("allows a topic-only match to contribute its summary and active child memories", async () => {
+    const topic = { ...makeTopicNode({ id: "topic-food", label: "Healthy North Indian Food", summary: "Healthy protein-rich North Indian meals." }), similarity: 0.96 };
+    const active = makeMemoryNode({ id: "active-food", topicNodeId: topic.id, memoryType: "preference", subject: "user", predicate: "prefers", value: "low-oil protein-rich meals", confidence: 0.9, embedding: [0.1, 0.2, 0.3] });
+    const forgotten = makeMemoryNode({ id: "forgotten-food", topicNodeId: topic.id, memoryType: "fact", subject: "user", predicate: "ate", value: "forgotten meal", confidence: 1, forgotten: true, embedding: [0.1, 0.2, 0.3] });
+    const pipeline = new RetrieverPipeline(makeStore({
+      searchMemoryCandidates: async () => [],
+      searchTopicCandidates: async () => [topic],
+      getActiveMemoriesByTopicIds: async () => [active, forgotten],
+    }), makeEmbedder(), {});
+
+    const result = await pipeline.run("healthy food", "session-1");
+
+    expect(result.nodes.map((node) => node.id)).toEqual([topic.id]);
+    expect(result.facts.map((fact) => fact.id)).toEqual([active.id]);
+    expect(result.systemPrompt).toContain(topic.summary);
+    expect(result.systemPrompt).not.toContain(forgotten.value);
+    expect(result.topicMatches).toEqual([{ topicId: topic.id, matchedBy: ["topic"], score: 0.96 }]);
+    expect(result.selection).toMatchObject({ memoryCandidateCount: 0, topicCandidateCount: 1, topicOnlyMatchCount: 1 });
+  });
+
+  it("deduplicates a topic reached through both memory and topic search", async () => {
+    const topic = { ...makeTopicNode({ id: "topic-both", label: "Both", summary: "Matched twice." }), similarity: 0.95 };
+    const fact = makeScoredMemoryNode({ id: "fact-both", topicNodeId: topic.id, memoryType: "fact", subject: "project", predicate: "uses", value: "topic-aware retrieval", confidence: 1, similarity: 0.9 });
+    const result = await new RetrieverPipeline(makeStore({
+      searchMemoryCandidates: async () => [fact],
+      searchTopicCandidates: async () => [topic],
+      getActiveMemoriesByTopicIds: async () => [fact],
+    }), makeEmbedder(), {}).run("retrieval", "session-1");
+
+    expect(result.nodes.map((node) => node.id)).toEqual([topic.id]);
+    expect(result.facts.map((candidate) => candidate.id)).toEqual([fact.id]);
+    expect(result.topicMatches).toEqual([{ topicId: topic.id, matchedBy: ["memory", "topic"], score: 0.95 }]);
+  });
+
   it("embeds a contextualized query and does not mutate the graph", async () => {
     const embed = vi.fn(async () => [0.1, 0.2, 0.3]);
     const store = makeStore({ searchMemories: vi.fn(async () => []) });

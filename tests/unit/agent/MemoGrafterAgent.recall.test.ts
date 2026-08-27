@@ -122,6 +122,7 @@ function patchStore(
 ): void {
   const core = (agent as unknown as { core: { store: GraphStore } }).core;
   Object.assign(core.store, store);
+  core.store.searchTopicCandidates = async () => [];
   if (store.searchMemories) {
     const searchMemories = store.searchMemories;
     core.store.searchMemoryCandidates = (embedding, sessionId, limit, options) =>

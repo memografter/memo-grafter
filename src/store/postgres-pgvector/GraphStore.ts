@@ -1028,6 +1028,23 @@ export class PostgresGraphStore implements GraphStore {
     return rows.map((row) => this.rowToMemoryNode(row));
   }
 
+  async getActiveMemoriesByTopicIds(topicNodeIds: string[], sessionIds?: string[]): Promise<MemoryNode[]> {
+    if (topicNodeIds.length === 0 || sessionIds?.length === 0) return [];
+    const rows = await this.sql<MemoryNodeRow[]>`
+      SELECT memory.*
+      FROM mg_memory_nodes memory
+      JOIN mg_topic_nodes topic ON topic.id = memory.topic_node_id
+      WHERE memory.topic_node_id = ANY(${this.sql.array(topicNodeIds)})
+        ${sessionIds ? this.sql`AND memory.session_id = ANY(${this.sql.array(sessionIds)})` : this.sql``}
+        AND memory.decayed = false
+        AND memory.superseded_by IS NULL
+        AND memory.forgotten = false
+        AND topic.suppressed = false
+      ORDER BY memory.created_at DESC, memory.id ASC
+    `;
+    return rows.map((row) => this.rowToMemoryNode(row));
+  }
+
   async getMemoriesBySession(sessionId: string): Promise<MemoryNode[]> {
     const rows = await this.sql<MemoryNodeRow[]>`
       SELECT * FROM mg_memory_nodes
@@ -1391,6 +1408,30 @@ export class PostgresGraphStore implements GraphStore {
     `;
 
     return rows.map((row) => ({ ...this.rowToMemoryNode(row), similarity: row.similarity }));
+  }
+
+  async searchTopicCandidates(
+    embedding: number[],
+    sessionId: string,
+    limit: number,
+    options: TagFilterOptions = {},
+  ): Promise<(TopicNode & { similarity: number })[]> {
+    const tags = normalizeTags(options.tags);
+    const configuredSessionIds = options.sessionIds?.filter(Boolean) ?? [];
+    const searchTaggedSessions = options.scope === "tagged" && tags.length > 0;
+    if (options.sessionIds && configuredSessionIds.length === 0) return [];
+    const rows = await this.sql<Array<TopicNodeRow & { similarity: number }>>`
+      SELECT topic.*, 1 - (topic.embedding <=> ${toVectorLiteral(embedding)}::vector) AS similarity
+      FROM mg_topic_nodes topic
+      WHERE ${configuredSessionIds.length > 0
+        ? this.sql`topic.session_id = ANY(${this.sql.array(configuredSessionIds)})`
+        : searchTaggedSessions ? this.sql`TRUE` : this.sql`topic.session_id = ${sessionId}`}
+        AND topic.suppressed = false
+        ${this.topicTagsFilterSql(tags, options.tagMode, "topic")}
+      ORDER BY topic.embedding <=> ${toVectorLiteral(embedding)}::vector, topic.created_at DESC, topic.id ASC
+      LIMIT ${limit}
+    `;
+    return rows.map((row) => ({ ...this.rowToNode(row), similarity: row.similarity }));
   }
 
   private async searchMemoryCandidatesAcrossSessions(
@@ -2519,8 +2560,14 @@ export class PostgresGraphStore implements GraphStore {
     return `${truncated.trimEnd()} [truncated]`;
   }
 
-  private topicTagsFilterSql(tags: string[], tagMode: TagFilterOptions["tagMode"] = "all") {
+  private topicTagsFilterSql(tags: string[], tagMode: TagFilterOptions["tagMode"] = "all", tableAlias?: "topic") {
     if (tags.length === 0) return this.sql``;
+
+    if (tableAlias === "topic") {
+      return tagMode === "any"
+        ? this.sql`AND topic.tags && ${this.sql.array(tags)}::text[]`
+        : this.sql`AND topic.tags @> ${this.sql.array(tags)}::text[]`;
+    }
 
     return tagMode === "any"
       ? this.sql`AND tags && ${this.sql.array(tags)}::text[]`
