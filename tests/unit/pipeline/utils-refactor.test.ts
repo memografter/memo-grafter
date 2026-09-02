@@ -54,6 +54,7 @@ describe("extracted utility helpers", () => {
           predicate: "selected",
           value: "PostgreSQL",
           confidence: 0.9,
+          provenance: { speaker: "user", message_indexes: [1], extraction_method: "explicit" },
         },
       ],
     }));
@@ -62,6 +63,20 @@ describe("extracted utility helpers", () => {
     expect(result.userIntent).toBe("Choose a database.");
     expect(result.memories).toHaveLength(1);
     expect(result.memories[0]?.confidence).toBe(0.9);
+    expect(result.memories[0]?.provenance).toEqual({ speaker: "user", messageIndexes: [1], extractionMethod: "explicit" });
+  });
+
+  it("rejects memory candidates without evidence provenance and clamps confidence", () => {
+    const result = parseSegmentExtraction(JSON.stringify({
+      label: "Food", user_intent: "Get a suggestion.", outcome: "The assistant suggested yogurt.", open: null,
+      memories: [
+        { memory_type: "fact", subject: "user", predicate: "likes", value: "yogurt", confidence: 5 },
+        { memory_type: "fact", subject: "user", predicate: "avoids", value: "dairy", confidence: 5,
+          provenance: { speaker: "user", message_indexes: [1], extraction_method: "explicit" } },
+      ],
+    }));
+    expect(result.memories).toHaveLength(1);
+    expect(result.memories[0]?.confidence).toBe(1);
   });
 
   it("finds current-run reentry edges from explicit cues and lexical overlap", () => {

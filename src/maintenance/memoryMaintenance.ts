@@ -88,6 +88,7 @@ function getConflictGrouping(memory: MemoryNode): ConflictGrouping | null {
   return {
     key: [
       memory.sessionId,
+      memory.provenance?.speaker ?? "legacy-unknown",
       normalizeMemoryPart(memory.subject),
       normalizeMemoryPart(memory.predicate),
     ].join("\u0000"),
@@ -101,7 +102,7 @@ function getBroadTopicConflictGrouping(memory: MemoryNode): ConflictGrouping | n
   if (!destination) return null;
 
   return {
-    key: [memory.sessionId, "broad-topic", "travel-trip-plan"].join("\u0000"),
+    key: [memory.sessionId, memory.provenance?.speaker ?? "legacy-unknown", "broad-topic", "travel-trip-plan"].join("\u0000"),
     value: destination,
   };
 }

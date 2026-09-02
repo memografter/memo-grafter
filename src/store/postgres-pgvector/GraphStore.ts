@@ -67,6 +67,10 @@ interface MemoryNodeRow {
   source: string | null;
   source_url: string | null;
   source_title: string | null;
+  provenance_speaker: NonNullable<MemoryNode["provenance"]>["speaker"] | null;
+  provenance_message_indexes: number[] | null;
+  provenance_session_id: string | null;
+  extraction_method: NonNullable<MemoryNode["provenance"]>["extractionMethod"] | null;
   superseded_by: string | null;
   decayed: boolean;
   forgotten: boolean | null;
@@ -280,6 +284,10 @@ export class PostgresGraphStore implements GraphStore {
         source        TEXT,
         source_url    TEXT,
         source_title  TEXT,
+        provenance_speaker TEXT CHECK (provenance_speaker IN ('user','assistant','system','document')),
+        provenance_message_indexes INT[],
+        provenance_session_id TEXT,
+        extraction_method TEXT CHECK (extraction_method IN ('explicit','inferred','user-confirmed','document-extraction')),
         superseded_by UUID REFERENCES mg_memory_nodes(id),
         decayed       BOOLEAN NOT NULL DEFAULT FALSE,
         forgotten     BOOLEAN NOT NULL DEFAULT FALSE,
@@ -338,6 +346,10 @@ export class PostgresGraphStore implements GraphStore {
       ALTER TABLE mg_memory_nodes
       ADD COLUMN IF NOT EXISTS source TEXT
     `;
+    await this.sql`ALTER TABLE mg_memory_nodes ADD COLUMN IF NOT EXISTS provenance_speaker TEXT`;
+    await this.sql`ALTER TABLE mg_memory_nodes ADD COLUMN IF NOT EXISTS provenance_message_indexes INT[]`;
+    await this.sql`ALTER TABLE mg_memory_nodes ADD COLUMN IF NOT EXISTS provenance_session_id TEXT`;
+    await this.sql`ALTER TABLE mg_memory_nodes ADD COLUMN IF NOT EXISTS extraction_method TEXT`;
 
     await this.sql`
       CREATE TABLE IF NOT EXISTS mg_memory_edges (
@@ -589,7 +601,7 @@ export class PostgresGraphStore implements GraphStore {
       if (cursor !== prepared.expectedCursor) throw this.ingestionInvariant(`Expected cursor ${prepared.expectedCursor}, found ${cursor}.`, prepared.sessionId, prepared.runId);
       for (const segment of prepared.segments) await transaction`INSERT INTO mg_segments (id,session_id,start_index,end_index,topic_order,drift_score,created_at) VALUES (${segment.id},${segment.sessionId},${segment.startIndex},${segment.endIndex},${segment.topicOrder},${segment.driftScore},${segment.createdAt}) ON CONFLICT (session_id,start_index,end_index) DO UPDATE SET topic_order=EXCLUDED.topic_order,drift_score=EXCLUDED.drift_score`;
       for (const node of prepared.nodes) await transaction`INSERT INTO mg_topic_nodes (id,session_id,segment_id,label,summary,embedding,tags,source,message_range,topic_order,drift_score,agent_color,fleet_id,agent_id,created_at) VALUES (${node.id},${node.sessionId},${node.segmentId},${node.label},${node.summary},${toVectorLiteral(node.embedding)}::vector,${transaction.array(normalizeTags(node.tags))}::text[],${node.source ?? null},${node.messageRange},${node.topicOrder},${node.driftScore},${node.agentColor},${node.fleetId},${node.agentId},${node.createdAt}) ON CONFLICT (segment_id) DO UPDATE SET label=EXCLUDED.label,summary=EXCLUDED.summary,embedding=EXCLUDED.embedding,tags=EXCLUDED.tags,source=EXCLUDED.source,message_range=EXCLUDED.message_range,topic_order=EXCLUDED.topic_order,drift_score=EXCLUDED.drift_score`;
-      for (const memory of prepared.memories) await transaction`INSERT INTO mg_memory_nodes (id,segment_id,topic_node_id,agent_id,session_id,memory_type,source_type,subject,predicate,value,confidence,embedding,tags,source,source_url,source_title,superseded_by,decayed,forgotten,has_conflict,agent_color,fleet_id) VALUES (${memory.id},${memory.segmentId},${memory.topicNodeId},${memory.agentId},${memory.sessionId},${memory.memoryType},${memory.sourceType},${memory.subject},${memory.predicate},${memory.value},${memory.confidence},${toVectorLiteral(memory.embedding)}::vector,${transaction.array(normalizeTags(memory.tags))}::text[],${memory.source ?? null},${memory.sourceUrl},${memory.sourceTitle},${memory.supersededBy},${memory.decayed},${memory.forgotten ?? false},${memory.hasConflict ?? false},${memory.agentColor},${memory.fleetId}) ON CONFLICT (id) DO NOTHING`;
+      for (const memory of prepared.memories) await transaction`INSERT INTO mg_memory_nodes (id,segment_id,topic_node_id,agent_id,session_id,memory_type,source_type,subject,predicate,value,confidence,embedding,tags,source,source_url,source_title,provenance_speaker,provenance_message_indexes,provenance_session_id,extraction_method,superseded_by,decayed,forgotten,has_conflict,agent_color,fleet_id) VALUES (${memory.id},${memory.segmentId},${memory.topicNodeId},${memory.agentId},${memory.sessionId},${memory.memoryType},${memory.sourceType},${memory.subject},${memory.predicate},${memory.value},${memory.confidence},${toVectorLiteral(memory.embedding)}::vector,${transaction.array(normalizeTags(memory.tags))}::text[],${memory.source ?? null},${memory.sourceUrl},${memory.sourceTitle},${memory.provenance?.speaker ?? null},${memory.provenance ? transaction.array(memory.provenance.messageIndexes) : null}::int[],${memory.provenance?.sessionId ?? null},${memory.provenance?.extractionMethod ?? null},${memory.supersededBy},${memory.decayed},${memory.forgotten ?? false},${memory.hasConflict ?? false},${memory.agentColor},${memory.fleetId}) ON CONFLICT (id) DO NOTHING`;
       for (const edge of prepared.requiredEdges) await transaction`INSERT INTO mg_topic_edges (src_id,dst_id,weight,type) VALUES (${edge.srcId},${edge.dstId},${edge.weight},${edge.type}) ON CONFLICT (src_id,dst_id) DO UPDATE SET weight=EXCLUDED.weight,type=EXCLUDED.type`;
       await transaction`INSERT INTO mg_session_ingest_state (session_id,last_ingested_message_index,updated_at) VALUES (${prepared.sessionId},${prepared.endIndex},NOW()) ON CONFLICT (session_id) DO UPDATE SET last_ingested_message_index=EXCLUDED.last_ingested_message_index,updated_at=NOW()`;
       const completed = await transaction<IngestionRunRow[]>`UPDATE mg_ingestion_runs SET status='completed',completed_at=NOW(),lease_expires_at=NULL,updated_at=NOW() WHERE id=${prepared.runId} AND status='running' RETURNING *`;
@@ -967,6 +979,10 @@ export class PostgresGraphStore implements GraphStore {
       source: node.source ?? null,
       source_url: node.sourceUrl,
       source_title: node.sourceTitle,
+      provenance_speaker: node.provenance?.speaker ?? null,
+      provenance_message_indexes: node.provenance?.messageIndexes ?? null,
+      provenance_session_id: node.provenance?.sessionId ?? null,
+      extraction_method: node.provenance?.extractionMethod ?? null,
       superseded_by: node.supersededBy,
       decayed: node.decayed,
       has_conflict: node.hasConflict ?? false,
@@ -993,6 +1009,10 @@ export class PostgresGraphStore implements GraphStore {
         "source",
         "source_url",
         "source_title",
+        "provenance_speaker",
+        "provenance_message_indexes",
+        "provenance_session_id",
+        "extraction_method",
         "superseded_by",
         "decayed",
         "has_conflict",
@@ -1875,12 +1895,14 @@ export class PostgresGraphStore implements GraphStore {
         INSERT INTO mg_memory_nodes (
           segment_id, topic_node_id, agent_id, session_id, memory_type, source_type,
           subject, predicate, value, confidence, embedding, tags, source, source_url,
-          source_title, superseded_by, decayed, forgotten, has_conflict, agent_color, fleet_id
+          source_title, provenance_speaker, provenance_message_indexes, provenance_session_id,
+          extraction_method, superseded_by, decayed, forgotten, has_conflict, agent_color, fleet_id
         )
         SELECT
           ${segmentId}, ${copiedTopicId}, agent_id, ${request.targetSessionId}, memory_type, source_type,
           subject, predicate, value, confidence, embedding, tags, source, source_url,
-          source_title, NULL, FALSE, FALSE, has_conflict, agent_color, fleet_id
+          source_title, provenance_speaker, provenance_message_indexes, provenance_session_id,
+          extraction_method, NULL, FALSE, FALSE, has_conflict, agent_color, fleet_id
         FROM mg_memory_nodes
         WHERE topic_node_id = ${sourceTopicId} AND session_id = ${request.sourceSessionId}
           AND forgotten = FALSE AND decayed = FALSE AND superseded_by IS NULL
@@ -2030,6 +2052,10 @@ export class PostgresGraphStore implements GraphStore {
         source,
         source_url,
         source_title,
+        provenance_speaker,
+        provenance_message_indexes,
+        provenance_session_id,
+        extraction_method,
         superseded_by,
         decayed,
         agent_color,
@@ -2051,6 +2077,10 @@ export class PostgresGraphStore implements GraphStore {
         source,
         source_url,
         source_title,
+        provenance_speaker,
+        provenance_message_indexes,
+        provenance_session_id,
+        extraction_method,
         NULL,
         FALSE,
         ${copiedNode.agentColor},
@@ -2252,6 +2282,7 @@ export class PostgresGraphStore implements GraphStore {
       "source",
       "sourceUrl",
       "sourceTitle",
+      "provenance",
       "supersededBy",
       "decayed",
       "forgotten",
@@ -2659,6 +2690,9 @@ export class PostgresGraphStore implements GraphStore {
       ...(row.source ? { source: row.source } : {}),
       sourceUrl: row.source_url,
       sourceTitle: row.source_title,
+      provenance: row.provenance_speaker && row.provenance_message_indexes && row.provenance_session_id && row.extraction_method
+        ? { speaker: row.provenance_speaker, messageIndexes: row.provenance_message_indexes, sessionId: row.provenance_session_id, extractionMethod: row.extraction_method }
+        : null,
       supersededBy: row.superseded_by,
       decayed: row.decayed,
       forgotten: row.forgotten ?? false,

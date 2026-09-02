@@ -1,6 +1,8 @@
 import type {
   ExtractedMemory,
   MemoryType,
+  MemoryExtractionMethod,
+  MemorySpeaker,
   SegmentExtractionResult,
 } from "../../core/types.js";
 import { MemoGrafterError, emitWarning, type MemoGrafterDiagnostics } from "../../diagnostics.js";
@@ -74,8 +76,9 @@ function parseExtractedMemories(value: unknown): ExtractedMemory[] {
     const subject = stringValue(record.subject);
     const predicate = stringValue(record.predicate);
     const memoryValue = stringValue(record.value);
+    const provenance = parseProvenance(record.provenance);
 
-    if (!validTypes.has(memoryType) || !subject || !predicate || !memoryValue) {
+    if (!validTypes.has(memoryType) || !subject || !predicate || !memoryValue || !provenance) {
       console.warn("SegmentProcessor skipped incomplete memory item:", item);
       continue;
     }
@@ -86,10 +89,24 @@ function parseExtractedMemories(value: unknown): ExtractedMemory[] {
       predicate,
       value: memoryValue,
       confidence: numberValue(record.confidence, 1),
+      provenance,
     });
   }
 
   return memories;
+}
+
+function parseProvenance(value: unknown): ExtractedMemory["provenance"] | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const speaker = stringValue(record.speaker) as MemorySpeaker;
+  const extractionMethod = stringValue(record.extraction_method) as MemoryExtractionMethod;
+  const validSpeakers = new Set<MemorySpeaker>(["user", "assistant", "system", "document"]);
+  const validMethods = new Set<MemoryExtractionMethod>(["explicit", "inferred", "user-confirmed", "document-extraction"]);
+  if (!Array.isArray(record.message_indexes) || record.message_indexes.some((item) => !Number.isInteger(item) || Number(item) <= 0)) return null;
+  const messageIndexes = [...new Set(record.message_indexes as number[])];
+  if (!validSpeakers.has(speaker) || !validMethods.has(extractionMethod) || messageIndexes.length === 0) return null;
+  return { speaker, messageIndexes, extractionMethod };
 }
 
 function stringValue(value: unknown): string {
@@ -105,5 +122,6 @@ function nullableStringValue(value: unknown): string | null {
 }
 
 function numberValue(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  const number = typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  return Math.min(Math.max(number, 0), 1);
 }
