@@ -47,6 +47,16 @@ export interface TopicSegment {
 
 export type MemoryType = "fact" | "insight" | "question" | "task" | "reference";
 export type MemorySourceType = "conversation" | "note" | "document" | "code";
+export type MemorySpeaker = "user" | "assistant" | "system" | "document";
+export type MemoryExtractionMethod = "explicit" | "inferred" | "user-confirmed" | "document-extraction";
+
+export interface MemoryProvenance {
+  speaker: MemorySpeaker;
+  /** Absolute indexes in the originating session's durable message buffer. */
+  messageIndexes: number[];
+  sessionId: string;
+  extractionMethod: MemoryExtractionMethod;
+}
 
 export interface MemoryNode {
   id: string;
@@ -65,6 +75,8 @@ export interface MemoryNode {
   source?: string;
   sourceUrl: string | null;
   sourceTitle: string | null;
+  /** Null only for rows created before memory-level provenance was introduced. */
+  provenance?: MemoryProvenance | null;
   supersededBy: string | null;
   decayed: boolean;
   forgotten?: boolean;
@@ -141,6 +153,8 @@ export interface ExtractedMemory {
   predicate: string;
   value: string;
   confidence: number;
+  /** Message indexes are one-based and relative to the extraction prompt. */
+  provenance: Omit<MemoryProvenance, "sessionId">;
 }
 
 export interface SegmentExtractionResult {

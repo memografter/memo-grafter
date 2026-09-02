@@ -1,4 +1,4 @@
-export type MgColumnType = "text" | "int" | "float" | "boolean" | "uuid" | "timestamptz" | "vector" | "text[]";
+export type MgColumnType = "text" | "int" | "float" | "boolean" | "uuid" | "timestamptz" | "vector" | "text[]" | "int[]";
 
 export interface MgColumnDefinition {
   name: string;

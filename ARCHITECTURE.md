@@ -52,6 +52,8 @@ The node-count guard avoids an embed and memory search on the first turn or whil
 
 `IngestPipeline` is responsible for turning a session message history into graph state.
 
+Memory extraction is selective rather than a transcript-to-facts conversion. Conversation memories must be supported by one or more user messages; assistant suggestions, questions, generated content, and acknowledgements do not become durable user state unless a later user message explicitly adopts them. Document ingestion uses document ownership. Before embedding, a deterministic validator checks the claimed speaker and supporting one-based prompt message indexes, converts them to absolute originating-session indexes, and rejects unsupported candidates. Persisted memory provenance contains the speaker, originating session, supporting message indexes, and extraction method. Legacy memory rows may have null provenance, while newly extracted rows carry it through graft and absorption copies.
+
 ```text
 indexed messages + sessionId
   -> load session ingest cursor

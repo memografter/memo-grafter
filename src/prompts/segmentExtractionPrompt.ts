@@ -1,13 +1,14 @@
 import type { Message } from "../core/types.js";
 import { normalizeText } from "../utils/text/normalizeText.js";
 
-export function buildSegmentExtractionPrompt(messages: Message[], labelHint?: string): string {
+export function buildSegmentExtractionPrompt(messages: Message[], labelHint?: string, sourceType: "conversation" | "note" | "document" | "code" = "conversation"): string {
+  const documentMode = sourceType !== "conversation";
   const messageContent = messages
     .map((message, index) => `Message ${index + 1}:\n[${message.role}] ${normalizeText(message.content) ?? message.content}`)
     .join("\n\n");
 
   return [
-    "Analyze this conversation segment and extract structured memory for a future chatbot.",
+    documentMode ? "Analyze this document segment and extract only durable, reusable knowledge for a future chatbot." : "Analyze this conversation segment and extract only durable user memory for a future chatbot.",
     "",
     "Return a single valid JSON object and nothing else. Do not include markdown fences, backticks, a preamble, comments, or trailing text.",
     "",
@@ -23,7 +24,12 @@ export function buildSegmentExtractionPrompt(messages: Message[], labelHint?: st
     '      "subject": "person, team, project, system, tool, or concept the memory is about",',
     '      "predicate": "short relationship or attribute phrase",',
     '      "value": "one sentence maximum, self-contained and meaningful without surrounding context",',
-    '      "confidence": 0.95',
+    '      "confidence": 0.95,',
+    '      "provenance": {',
+    `        "speaker": "${documentMode ? "document" : "user"}",`,
+    '        "message_indexes": [1],',
+    `        "extraction_method": "${documentMode ? "document-extraction" : "explicit | inferred | user-confirmed"}"`,
+    "      }",
     "    }",
     "  ]",
     "}",
@@ -31,7 +37,7 @@ export function buildSegmentExtractionPrompt(messages: Message[], labelHint?: st
     "Memory type definitions:",
     "- fact: explicit assertion, preference, decision, or constraint directly stated",
     "- insight: synthesized or implied understanding, not directly stated",
-    "- question: unresolved or open question raised in the conversation",
+    "- question: an important unresolved user goal whose future resolution matters",
     "- task: something actionable, a to-do, or next step",
     "- reference: an external tool, service, library, or resource being discussed",
     "",
@@ -41,6 +47,17 @@ export function buildSegmentExtractionPrompt(messages: Message[], labelHint?: st
     "- Uncertain or speculative: below 0.5",
     "",
     "Rules:",
+    "- Return only memories likely to remain useful beyond this exchange.",
+    ...(documentMode ? [
+      "- Attribute every memory to document with extraction_method document-extraction.",
+      "- message_indexes are the one-based Message numbers that directly support the memory.",
+    ] : [
+      "- Only user-authored or explicitly user-confirmed information may become durable memory.",
+      "- Never turn an assistant suggestion, assistant question, generated explanation, recipe, code, example, or acknowledgement into a user fact.",
+      "- A user asking a one-off question is not by itself a durable preference or fact.",
+      "- Store an assistant-introduced idea only when a later user message clearly accepts, saves, chooses, or confirms it; use user-confirmed.",
+      "- speaker must be user, and every message_indexes entry must point to a supporting [user] message.",
+    ]),
     "- The value field must be one sentence maximum.",
     "- The value field must be self-contained and meaningful without surrounding context.",
     "- When a statement explicitly corrects, replaces, or updates an earlier fact, preserve that update cue in the value, such as actually, now, changed to, or instead.",
@@ -71,14 +88,16 @@ export function buildSegmentExtractionPrompt(messages: Message[], labelHint?: st
     '      "subject": "user",',
     '      "predicate": "prefers database",',
     '      "value": "PostgreSQL over MongoDB for the billing service because it needs relational integrity.",',
-    '      "confidence": 0.95',
+    '      "confidence": 0.95,',
+    '      "provenance": { "speaker": "user", "message_indexes": [1], "extraction_method": "explicit" }',
     "    },",
     "    {",
     '      "memory_type": "question",',
     '      "subject": "team",',
     '      "predicate": "undecided on",',
     '      "value": "whether connection pooling should live in the app or infra layer.",',
-    '      "confidence": 0.8',
+    '      "confidence": 0.8,',
+    '      "provenance": { "speaker": "user", "message_indexes": [1], "extraction_method": "explicit" }',
     "    }",
     "  ]",
     "}",

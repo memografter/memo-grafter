@@ -10,6 +10,8 @@ The most important idea is memory grafting. A chatbot can build useful memory du
 
 MemoGrafter ingests conversation memory incrementally. New turns append topic nodes, memory nodes, and graph edges to the existing session graph instead of clearing and rebuilding the graph on every response. This keeps grafted memory and future external graph enrichment durable across normal chatbot turns.
 
+Durable conversation memory is limited to user-authored or user-confirmed state that remains useful beyond the current exchange, such as preferences, constraints, profile facts, goals, decisions, commitments, corrections, and important unresolved goals. Assistant suggestions, assistant questions, and generated recipes, explanations, examples, or code are not stored as user facts unless the user explicitly adopts them. Each newly extracted memory records its asserting speaker, originating session, supporting message indexes, and whether it was explicit, inferred, user-confirmed, or extracted from a document. Rows created by older MemoGrafter versions remain readable but may not have this provenance metadata.
+
 ## Requirements
 
 - Node.js 18 or newer.

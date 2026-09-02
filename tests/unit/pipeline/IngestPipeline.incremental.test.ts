@@ -15,7 +15,8 @@ import type {
 } from "../../../src/core/types.js";
 
 class FakeLLMAdapter implements LLMAdapter {
-  async complete(): Promise<string> {
+  async complete(messages: Message[] = []): Promise<string> {
+    const documentMode = messages.at(-1)?.content.includes("document segment") ?? false;
     return JSON.stringify({
       label: "Japan Travel",
       user_intent: "The user is discussing Japan travel preferences.",
@@ -27,6 +28,9 @@ class FakeLLMAdapter implements LLMAdapter {
         predicate: "discussed",
         value: "Japan travel preferences.",
         confidence: 0.9,
+        provenance: documentMode
+          ? { speaker: "document", message_indexes: [1], extraction_method: "document-extraction" }
+          : { speaker: "user", message_indexes: [1], extraction_method: "explicit" },
       }],
     });
   }

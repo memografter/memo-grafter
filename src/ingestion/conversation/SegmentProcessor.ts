@@ -21,6 +21,7 @@ import {
 import type { DriftSegment } from "./TopicDriftDetector.js";
 import { emitWarning, type MemoGrafterDiagnostics } from "../../diagnostics.js";
 import { validateCompletion, validateEmbedding } from "../../adapters/validation.js";
+import { validateDurableMemories } from "../../utils/extraction/durableMemoryValidation.js";
 
 export class SegmentProcessor {
   constructor(
@@ -45,7 +46,10 @@ export class SegmentProcessor {
     const tags = normalizeTags(options.tags);
     const prepared = await this.prepareTopic(candidateSegment, messages, tags, options, messageOffset);
     const persisted = await this.persistTopic(candidateSegment, prepared.node);
-    await this.processMemories(prepared.extracted.memories, persisted.segment, persisted.node, options);
+    await this.processMemories(prepared.extracted.memories, persisted.segment, persisted.node, options, messages.slice(
+      candidateSegment.startIndex - messageOffset,
+      candidateSegment.endIndex - messageOffset + 1,
+    ));
     return persisted.node;
   }
 
@@ -57,7 +61,10 @@ export class SegmentProcessor {
     const tags = normalizeTags(options.tags);
     const prepared = await this.prepareTopic(candidateSegment, messages, tags, options, messageOffset);
     try {
-      const memories = await this.prepareMemories(prepared.extracted.memories, candidateSegment, prepared.node, options);
+      const memories = await this.prepareMemories(prepared.extracted.memories, candidateSegment, prepared.node, options, messages.slice(
+        candidateSegment.startIndex - messageOffset,
+        candidateSegment.endIndex - messageOffset + 1,
+      ));
       return { segment: candidateSegment, node: prepared.node, memories, warnings: [] };
     } catch (cause) {
       if (memoriesRequired) throw cause;
@@ -90,7 +97,7 @@ export class SegmentProcessor {
       segment.startIndex - messageOffset,
       segment.endIndex - messageOffset + 1,
     );
-    const extractionPrompt = buildSegmentExtractionPrompt(segmentMessages, options.label);
+    const extractionPrompt = buildSegmentExtractionPrompt(segmentMessages, options.label, options.sourceType ?? "conversation");
     const raw = validateCompletion(await this.llm.complete([{ role: "user", content: extractionPrompt }]));
     const extracted = parseSegmentExtraction(raw, this.config.diagnostics);
     const summary = buildSegmentSummary(extracted);
@@ -142,11 +149,12 @@ export class SegmentProcessor {
     segment: TopicSegment,
     topicNode: TopicNode,
     options: IngestPipelineOptions,
+    segmentMessages: Message[],
   ): Promise<void> {
     if (memories.length === 0) return;
 
     try {
-      const nodes = await this.prepareMemories(memories, segment, topicNode, options);
+      const nodes = await this.prepareMemories(memories, segment, topicNode, options, segmentMessages);
       await this.store.insertMemories(nodes);
       await this.store.buildMemoryEdges(topicNode.id, segment.sessionId, this.config.semanticThreshold);
     } catch (error) {
@@ -155,16 +163,20 @@ export class SegmentProcessor {
     }
   }
 
-  private async prepareMemories(memories: ExtractedMemory[], segment: TopicSegment, topicNode: TopicNode, options: IngestPipelineOptions): Promise<MemoryNodeInsert[]> {
+  private async prepareMemories(memories: ExtractedMemory[], segment: TopicSegment, topicNode: TopicNode, options: IngestPipelineOptions, segmentMessages: Message[]): Promise<MemoryNodeInsert[]> {
     const nodes: MemoryNodeInsert[] = [];
-    for (const memory of memories) {
+    const validation = validateDurableMemories(memories, segmentMessages, segment, options.sourceType ?? "conversation");
+    for (const rejection of validation.rejected) {
+      console.warn(`SegmentProcessor rejected non-durable memory (${rejection.reason}):`, rejection.memory.value);
+    }
+    for (const memory of validation.accepted) {
       const embedding = validateEmbedding(await this.embedder.embed(formatMemoryEmbeddingText(memory)), this.embedder.dimensions);
       nodes.push({ id: randomUUID(), segmentId: segment.id, topicNodeId: topicNode.id, sessionId: segment.sessionId,
         agentId: topicNode.agentId, agentColor: topicNode.agentColor, fleetId: topicNode.fleetId,
         memoryType: memory.memoryType, sourceType: options.sourceType ?? "conversation", subject: memory.subject,
         predicate: memory.predicate, value: memory.value, confidence: memory.confidence, embedding,
         tags: topicNode.tags ?? [], ...(options.source ? { source: options.source } : {}), sourceUrl: null,
-        sourceTitle: null, supersededBy: null, decayed: false });
+        sourceTitle: null, provenance: memory.absoluteProvenance, supersededBy: null, decayed: false });
     }
     return nodes;
   }

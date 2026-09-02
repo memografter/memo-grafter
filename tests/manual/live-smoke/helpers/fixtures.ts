@@ -56,6 +56,7 @@ export class DeterministicEmbedder implements EmbedAdapter {
 export class DeterministicLLM implements LLMAdapter {
   async complete(messages: Message[]): Promise<string> {
     const prompt = messages.at(-1)?.content ?? "";
+    const documentMode = prompt.includes("Analyze this document segment");
     if (!prompt.includes("Conversation segment:")) return `Smoke response: ${prompt}`;
 
     const normalized = prompt.toLowerCase();
@@ -82,6 +83,9 @@ export class DeterministicLLM implements LLMAdapter {
         predicate: fixture[2],
         value: fixture[3],
         confidence: 0.95,
+        provenance: documentMode
+          ? { speaker: "document", message_indexes: [1], extraction_method: "document-extraction" }
+          : { speaker: "user", message_indexes: [1], extraction_method: "explicit" },
       }],
     });
   }
