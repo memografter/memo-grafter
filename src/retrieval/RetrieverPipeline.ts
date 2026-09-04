@@ -198,6 +198,10 @@ export class RetrieverPipeline {
     }
 
     const ttl = Math.min(Math.max(this.config.cache.ttlSeconds ?? 90, 60), 120);
+    const revisionSessions = options.sessionIds ?? [sessionId];
+    const memoryRevision = this.store.getMemoryRevision
+      ? await this.store.getMemoryRevision(revisionSessions)
+      : "legacy";
     const cacheKey = [
       "mg:recall",
       sessionId,
@@ -207,6 +211,7 @@ export class RetrieverPipeline {
       (this.config.sessionIds ?? []).join(","),
       options.tagMode ?? "all",
       (options.tags ?? []).join(","),
+      memoryRevision,
       this.hashEmbedding(embedding),
     ].join(":");
 

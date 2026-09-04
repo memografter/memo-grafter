@@ -69,6 +69,14 @@ export interface MemoryNode {
   subject: string;
   predicate: string;
   value: string;
+  canonicalSubject?: string;
+  canonicalPredicate?: string;
+  canonicalValue?: string;
+  canonicalFactKey?: string;
+  canonicalValueKey?: string;
+  canonicalizationVersion?: number;
+  reinforcementCount?: number;
+  lastReinforcedAt?: Date | null;
   confidence: number;
   embedding: number[];
   tags?: string[];
@@ -88,6 +96,19 @@ export interface MemoryNode {
 }
 
 export type MemoryNodeInsert = Omit<MemoryNode, "createdAt">;
+
+export interface MemoryEvidence {
+  id: string;
+  memoryNodeId: string;
+  segmentId: string;
+  topicNodeId: string;
+  sessionId: string;
+  originalSubject: string;
+  originalPredicate: string;
+  originalValue: string;
+  provenance?: MemoryProvenance | null;
+  createdAt: Date;
+}
 
 export interface MemoryEdge {
   id: string;

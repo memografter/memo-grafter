@@ -55,6 +55,8 @@ export interface GraphStore {
   getMemoryEdgesBySession(sessionId: string): Promise<MemoryEdge[]>;
   getMemoryHistoryById(memoryNodeId: string, options?: MemoryHistoryOptions): Promise<MemoryHistoryResult>;
   getMemoryHistoryByFact(subject: string, predicate: string, options?: MemoryHistoryOptions): Promise<MemoryHistoryResult>;
+  /** Stable revision of memory lifecycle state used to invalidate retrieval caches. */
+  getMemoryRevision?(sessionIds: string[]): Promise<string>;
   getMemoryDiff(fromMemoryId: string, toMemoryId: string): Promise<MemoryDiff>;
   listMemoryNodesForMaintenance(): Promise<MemoryNode[]>;
   forgetMemory(memoryNodeId: string): Promise<boolean>;

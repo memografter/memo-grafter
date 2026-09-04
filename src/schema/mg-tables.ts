@@ -1,7 +1,7 @@
 import { mgExtension, mgIndex, mgTable } from "./builders.js";
 
 export const memoGrafterMigrationTableName = "mg_migrations";
-export const memoGrafterCurrentMigrationVersion = 3;
+export const memoGrafterCurrentMigrationVersion = 4;
 
 export const memoGrafterExtensions = [
   mgExtension({
@@ -89,6 +89,14 @@ export const memoGrafterTables = [
       { name: "subject", type: "text" },
       { name: "predicate", type: "text" },
       { name: "value", type: "text" },
+      { name: "canonical_subject", type: "text", nullable: true },
+      { name: "canonical_predicate", type: "text", nullable: true },
+      { name: "canonical_value", type: "text", nullable: true },
+      { name: "canonical_fact_key", type: "text", nullable: true },
+      { name: "canonical_value_key", type: "text", nullable: true },
+      { name: "canonicalization_version", type: "int", default: "1" },
+      { name: "reinforcement_count", type: "int", default: "1" },
+      { name: "last_reinforced_at", type: "timestamptz", nullable: true },
       { name: "confidence", type: "float", default: "1.0" },
       { name: "embedding", type: "vector", nullable: true },
       { name: "tags", type: "text[]", default: "'{}'" },
@@ -108,6 +116,26 @@ export const memoGrafterTables = [
       { name: "fleet_id", type: "text", nullable: true },
       { name: "created_at", type: "timestamptz", default: "now()" },
     ],
+  }),
+  mgTable({
+    name: "mg_memory_evidence",
+    description: "Immutable observations supporting canonical memory nodes.",
+    columns: [
+      { name: "id", type: "uuid", primaryKey: true, default: "gen_random_uuid()" },
+      { name: "memory_node_id", type: "uuid", references: "mg_memory_nodes(id)" },
+      { name: "segment_id", type: "text", references: "mg_segments(id)" },
+      { name: "topic_node_id", type: "text", references: "mg_topic_nodes(id)" },
+      { name: "session_id", type: "text" },
+      { name: "original_subject", type: "text" },
+      { name: "original_predicate", type: "text" },
+      { name: "original_value", type: "text" },
+      { name: "provenance_speaker", type: "text", nullable: true },
+      { name: "provenance_message_indexes", type: "int[]", nullable: true },
+      { name: "provenance_session_id", type: "text", nullable: true },
+      { name: "extraction_method", type: "text", nullable: true },
+      { name: "created_at", type: "timestamptz", default: "now()" },
+    ],
+    constraints: ["UNIQUE (memory_node_id, segment_id, provenance_message_indexes)"],
   }),
   mgTable({
     name: "mg_memory_edges",
@@ -218,6 +246,9 @@ export const memoGrafterIndexes = [
   mgIndex({ name: "idx_memory_nodes_topic", table: "mg_memory_nodes", description: "Memory lookup by topic node." }),
   mgIndex({ name: "idx_memory_nodes_segment", table: "mg_memory_nodes", description: "Memory lookup by segment." }),
   mgIndex({ name: "idx_memory_nodes_session", table: "mg_memory_nodes", description: "Memory lookup by session." }),
+  mgIndex({ name: "idx_memory_nodes_canonical_fact", table: "mg_memory_nodes", description: "Canonical fact lookup during ingestion." }),
+  mgIndex({ name: "idx_memory_nodes_canonical_value", table: "mg_memory_nodes", description: "Canonical value deduplication during ingestion." }),
+  mgIndex({ name: "idx_memory_evidence_memory", table: "mg_memory_evidence", description: "Evidence lookup by memory." }),
   mgIndex({ name: "idx_memory_nodes_active_lifecycle", table: "mg_memory_nodes", description: "Active memory lifecycle lookup." }),
   mgIndex({ name: "idx_memory_nodes_tags", table: "mg_memory_nodes", description: "Memory tag lookup." }),
   mgIndex({ name: "idx_memory_nodes_embedding", table: "mg_memory_nodes", description: "Memory vector similarity search." }),
