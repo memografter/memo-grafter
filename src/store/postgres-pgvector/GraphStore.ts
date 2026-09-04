@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import postgres, { type Sql } from "postgres";
+import postgres, { type Sql, type TransactionSql } from "postgres";
 import type { FleetAgentRecord, GraphStore } from "../GraphStore.js";
 import type { DatabaseQueryOperation, MemoGrafterDatabaseTelemetry } from "../../core/types.js";
 import type { GraftRegistryEntry, GraftTopicsRequest, GraftTopicsResult, MemoryDiff, MemoryDiffField, MemoryEdge, MemoryHistoryEntry, MemoryHistoryOptions, MemoryHistoryResult, MemoryHistoryStatus, MemoryNode, MemoryNodeInsert, Message, SessionIngestState, TagFilterOptions, TopicEdge, TopicNode, TopicSegment } from "../../core/types.js";
@@ -17,6 +17,7 @@ import { parseVector, toVectorLiteral } from "../../utils/vector/vectorLiteral.j
 import type { AcceptIngestionRequest, IngestionRun, IngestionTransition, PreparedIngestion, ReconciliationIssue } from "../../ingestion/types.js";
 import { MemoGrafterError } from "../../diagnostics.js";
 import { assertIngestionTransition } from "../../ingestion/stateMachine.js";
+import { canonicalizeFactParts, canonicalizeMemory, classifyCanonicalMemory } from "../../utils/extraction/memoryCanonicalization.js";
 
 interface TopicNodeRow {
   id: string;
@@ -61,6 +62,14 @@ interface MemoryNodeRow {
   subject: string;
   predicate: string;
   value: string;
+  canonical_subject: string | null;
+  canonical_predicate: string | null;
+  canonical_value: string | null;
+  canonical_fact_key: string | null;
+  canonical_value_key: string | null;
+  canonicalization_version: number | null;
+  reinforcement_count: number | null;
+  last_reinforced_at: Date | null;
   confidence: number;
   embedding: string | number[] | null;
   tags: string[] | null;
@@ -278,6 +287,14 @@ export class PostgresGraphStore implements GraphStore {
         subject       TEXT NOT NULL,
         predicate     TEXT NOT NULL,
         value         TEXT NOT NULL,
+        canonical_subject TEXT,
+        canonical_predicate TEXT,
+        canonical_value TEXT,
+        canonical_fact_key TEXT,
+        canonical_value_key TEXT,
+        canonicalization_version INT NOT NULL DEFAULT 1,
+        reinforcement_count INT NOT NULL DEFAULT 1,
+        last_reinforced_at TIMESTAMPTZ,
         confidence    FLOAT NOT NULL DEFAULT 1.0,
         embedding     vector(1536),
         tags          TEXT[] NOT NULL DEFAULT '{}',
@@ -350,6 +367,14 @@ export class PostgresGraphStore implements GraphStore {
     await this.sql`ALTER TABLE mg_memory_nodes ADD COLUMN IF NOT EXISTS provenance_message_indexes INT[]`;
     await this.sql`ALTER TABLE mg_memory_nodes ADD COLUMN IF NOT EXISTS provenance_session_id TEXT`;
     await this.sql`ALTER TABLE mg_memory_nodes ADD COLUMN IF NOT EXISTS extraction_method TEXT`;
+    await this.sql`ALTER TABLE mg_memory_nodes ADD COLUMN IF NOT EXISTS canonical_subject TEXT`;
+    await this.sql`ALTER TABLE mg_memory_nodes ADD COLUMN IF NOT EXISTS canonical_predicate TEXT`;
+    await this.sql`ALTER TABLE mg_memory_nodes ADD COLUMN IF NOT EXISTS canonical_value TEXT`;
+    await this.sql`ALTER TABLE mg_memory_nodes ADD COLUMN IF NOT EXISTS canonical_fact_key TEXT`;
+    await this.sql`ALTER TABLE mg_memory_nodes ADD COLUMN IF NOT EXISTS canonical_value_key TEXT`;
+    await this.sql`ALTER TABLE mg_memory_nodes ADD COLUMN IF NOT EXISTS canonicalization_version INT NOT NULL DEFAULT 1`;
+    await this.sql`ALTER TABLE mg_memory_nodes ADD COLUMN IF NOT EXISTS reinforcement_count INT NOT NULL DEFAULT 1`;
+    await this.sql`ALTER TABLE mg_memory_nodes ADD COLUMN IF NOT EXISTS last_reinforced_at TIMESTAMPTZ`;
 
     await this.sql`
       CREATE TABLE IF NOT EXISTS mg_memory_edges (
@@ -359,6 +384,15 @@ export class PostgresGraphStore implements GraphStore {
         edge_type  TEXT NOT NULL CHECK (edge_type IN ('semantic','conflicts','updates','related')),
         weight     FLOAT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `;
+    await this.sql`
+      CREATE TABLE IF NOT EXISTS mg_memory_evidence (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(), memory_node_id UUID NOT NULL REFERENCES mg_memory_nodes(id) ON DELETE CASCADE,
+        segment_id TEXT NOT NULL REFERENCES mg_segments(id) ON DELETE CASCADE, topic_node_id TEXT NOT NULL REFERENCES mg_topic_nodes(id) ON DELETE CASCADE,
+        session_id TEXT NOT NULL, original_subject TEXT NOT NULL, original_predicate TEXT NOT NULL, original_value TEXT NOT NULL,
+        provenance_speaker TEXT, provenance_message_indexes INT[], provenance_session_id TEXT, extraction_method TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE (memory_node_id, segment_id, provenance_message_indexes)
       )
     `;
 
@@ -601,7 +635,7 @@ export class PostgresGraphStore implements GraphStore {
       if (cursor !== prepared.expectedCursor) throw this.ingestionInvariant(`Expected cursor ${prepared.expectedCursor}, found ${cursor}.`, prepared.sessionId, prepared.runId);
       for (const segment of prepared.segments) await transaction`INSERT INTO mg_segments (id,session_id,start_index,end_index,topic_order,drift_score,created_at) VALUES (${segment.id},${segment.sessionId},${segment.startIndex},${segment.endIndex},${segment.topicOrder},${segment.driftScore},${segment.createdAt}) ON CONFLICT (session_id,start_index,end_index) DO UPDATE SET topic_order=EXCLUDED.topic_order,drift_score=EXCLUDED.drift_score`;
       for (const node of prepared.nodes) await transaction`INSERT INTO mg_topic_nodes (id,session_id,segment_id,label,summary,embedding,tags,source,message_range,topic_order,drift_score,agent_color,fleet_id,agent_id,created_at) VALUES (${node.id},${node.sessionId},${node.segmentId},${node.label},${node.summary},${toVectorLiteral(node.embedding)}::vector,${transaction.array(normalizeTags(node.tags))}::text[],${node.source ?? null},${node.messageRange},${node.topicOrder},${node.driftScore},${node.agentColor},${node.fleetId},${node.agentId},${node.createdAt}) ON CONFLICT (segment_id) DO UPDATE SET label=EXCLUDED.label,summary=EXCLUDED.summary,embedding=EXCLUDED.embedding,tags=EXCLUDED.tags,source=EXCLUDED.source,message_range=EXCLUDED.message_range,topic_order=EXCLUDED.topic_order,drift_score=EXCLUDED.drift_score`;
-      for (const memory of prepared.memories) await transaction`INSERT INTO mg_memory_nodes (id,segment_id,topic_node_id,agent_id,session_id,memory_type,source_type,subject,predicate,value,confidence,embedding,tags,source,source_url,source_title,provenance_speaker,provenance_message_indexes,provenance_session_id,extraction_method,superseded_by,decayed,forgotten,has_conflict,agent_color,fleet_id) VALUES (${memory.id},${memory.segmentId},${memory.topicNodeId},${memory.agentId},${memory.sessionId},${memory.memoryType},${memory.sourceType},${memory.subject},${memory.predicate},${memory.value},${memory.confidence},${toVectorLiteral(memory.embedding)}::vector,${transaction.array(normalizeTags(memory.tags))}::text[],${memory.source ?? null},${memory.sourceUrl},${memory.sourceTitle},${memory.provenance?.speaker ?? null},${memory.provenance ? transaction.array(memory.provenance.messageIndexes) : null}::int[],${memory.provenance?.sessionId ?? null},${memory.provenance?.extractionMethod ?? null},${memory.supersededBy},${memory.decayed},${memory.forgotten ?? false},${memory.hasConflict ?? false},${memory.agentColor},${memory.fleetId}) ON CONFLICT (id) DO NOTHING`;
+      await this.reconcileAndInsertMemories(transaction, prepared.memories);
       for (const edge of prepared.requiredEdges) await transaction`INSERT INTO mg_topic_edges (src_id,dst_id,weight,type) VALUES (${edge.srcId},${edge.dstId},${edge.weight},${edge.type}) ON CONFLICT (src_id,dst_id) DO UPDATE SET weight=EXCLUDED.weight,type=EXCLUDED.type`;
       await transaction`INSERT INTO mg_session_ingest_state (session_id,last_ingested_message_index,updated_at) VALUES (${prepared.sessionId},${prepared.endIndex},NOW()) ON CONFLICT (session_id) DO UPDATE SET last_ingested_message_index=EXCLUDED.last_ingested_message_index,updated_at=NOW()`;
       const completed = await transaction<IngestionRunRow[]>`UPDATE mg_ingestion_runs SET status='completed',completed_at=NOW(),lease_expires_at=NULL,updated_at=NOW() WHERE id=${prepared.runId} AND status='running' RETURNING *`;
@@ -961,65 +995,71 @@ export class PostgresGraphStore implements GraphStore {
 
   async insertMemories(nodes: MemoryNodeInsert[]): Promise<void> {
     if (nodes.length === 0) return;
+    await this.sql.begin(async (transaction) => {
+      for (const sessionId of [...new Set(nodes.map((node) => node.sessionId))]) {
+        await transaction`SELECT pg_advisory_xact_lock(hashtext(${`memo-grafter-session:${sessionId}`}))`;
+      }
+      await this.reconcileAndInsertMemories(transaction, nodes);
+    });
+  }
 
-    const rows = nodes.map((node) => ({
-      id: node.id,
-      segment_id: node.segmentId,
-      topic_node_id: node.topicNodeId,
-      agent_id: node.agentId,
-      session_id: node.sessionId,
-      memory_type: node.memoryType,
-      source_type: node.sourceType,
-      subject: node.subject,
-      predicate: node.predicate,
-      value: node.value,
-      confidence: node.confidence,
-      embedding: toVectorLiteral(node.embedding),
-      tags: normalizeTags(node.tags),
-      source: node.source ?? null,
-      source_url: node.sourceUrl,
-      source_title: node.sourceTitle,
-      provenance_speaker: node.provenance?.speaker ?? null,
-      provenance_message_indexes: node.provenance?.messageIndexes ?? null,
-      provenance_session_id: node.provenance?.sessionId ?? null,
-      extraction_method: node.provenance?.extractionMethod ?? null,
-      superseded_by: node.supersededBy,
-      decayed: node.decayed,
-      has_conflict: node.hasConflict ?? false,
-      agent_color: node.agentColor,
-      fleet_id: node.fleetId,
-    }));
+  private async reconcileAndInsertMemories(transaction: TransactionSql, nodes: MemoryNodeInsert[]): Promise<void> {
+    for (const node of nodes) {
+      const canonical = canonicalizeMemory(node);
+      const candidates = await transaction<MemoryNodeRow[]>`
+        SELECT * FROM mg_memory_nodes WHERE session_id=${node.sessionId}
+          AND forgotten=FALSE AND decayed=FALSE AND superseded_by IS NULL
+        ORDER BY created_at DESC,id DESC FOR UPDATE`;
+      const active: MemoryNodeRow[] = [];
+      for (const candidate of candidates) {
+        const existingCanonical = candidate.canonical_fact_key
+          ? null
+          : canonicalizeMemory(this.rowToMemoryNode(candidate));
+        if (existingCanonical) {
+          await transaction`UPDATE mg_memory_nodes SET canonical_subject=${existingCanonical.subject},canonical_predicate=${existingCanonical.predicate},canonical_value=${existingCanonical.value},canonical_fact_key=${existingCanonical.factKey},canonical_value_key=${existingCanonical.valueKey},canonicalization_version=${existingCanonical.version} WHERE id=${candidate.id}::uuid`;
+          candidate.canonical_fact_key = existingCanonical.factKey;
+          candidate.canonical_value_key = existingCanonical.valueKey;
+        }
+        if (candidate.canonical_fact_key === canonical.factKey) active.push(candidate);
+      }
+      const classification = classifyCanonicalMemory(canonical, active.map((row) => this.rowToMemoryNode(row)));
+      const equivalent = active.find((row) => row.canonical_value_key === canonical.valueKey);
+      let memoryNodeId = node.id;
+      if (classification === "reinforcement" && equivalent) {
+        memoryNodeId = equivalent.id;
+        if (await this.insertMemoryEvidence(transaction, memoryNodeId, node)) {
+          await transaction`UPDATE mg_memory_nodes SET reinforcement_count=reinforcement_count+1,last_reinforced_at=NOW(),confidence=GREATEST(confidence,${node.confidence}) WHERE id=${memoryNodeId}::uuid`;
+        }
+        continue;
+      }
+      await transaction`INSERT INTO mg_memory_nodes (
+        id,segment_id,topic_node_id,agent_id,session_id,memory_type,source_type,subject,predicate,value,
+        canonical_subject,canonical_predicate,canonical_value,canonical_fact_key,canonical_value_key,canonicalization_version,
+        confidence,embedding,tags,source,source_url,source_title,provenance_speaker,provenance_message_indexes,
+        provenance_session_id,extraction_method,superseded_by,decayed,forgotten,has_conflict,agent_color,fleet_id
+      ) VALUES (${node.id},${node.segmentId},${node.topicNodeId},${node.agentId},${node.sessionId},${node.memoryType},${node.sourceType},${node.subject},${node.predicate},${node.value},
+        ${canonical.subject},${canonical.predicate},${canonical.value},${canonical.factKey},${canonical.valueKey},${canonical.version},
+        ${node.confidence},${toVectorLiteral(node.embedding)}::vector,${transaction.array(normalizeTags(node.tags))}::text[],${node.source ?? null},${node.sourceUrl},${node.sourceTitle},
+        ${node.provenance?.speaker ?? null},${node.provenance ? transaction.array(node.provenance.messageIndexes) : null}::int[],${node.provenance?.sessionId ?? null},${node.provenance?.extractionMethod ?? null},
+        ${node.supersededBy},${node.decayed},${node.forgotten ?? false},${classification === "conflict" || node.hasConflict === true},${node.agentColor},${node.fleetId}) ON CONFLICT (id) DO NOTHING`;
+      await this.insertMemoryEvidence(transaction, memoryNodeId, node);
+      if (classification === "update") {
+        for (const previous of active) {
+          await transaction`UPDATE mg_memory_nodes SET superseded_by=${memoryNodeId}::uuid WHERE id=${previous.id}::uuid AND superseded_by IS NULL`;
+          await transaction`INSERT INTO mg_memory_edges (source_id,target_id,edge_type,weight) SELECT ${memoryNodeId}::uuid,${previous.id}::uuid,'updates',1 WHERE NOT EXISTS (SELECT 1 FROM mg_memory_edges WHERE source_id=${memoryNodeId}::uuid AND target_id=${previous.id}::uuid AND edge_type='updates')`;
+        }
+      } else if (classification === "conflict") {
+        await transaction`UPDATE mg_memory_nodes SET has_conflict=TRUE WHERE id=ANY(${transaction.array(active.map((row) => row.id))}::uuid[])`;
+        for (const previous of active) await transaction`INSERT INTO mg_memory_edges (source_id,target_id,edge_type,weight) SELECT ${memoryNodeId}::uuid,${previous.id}::uuid,'conflicts',1 WHERE NOT EXISTS (SELECT 1 FROM mg_memory_edges WHERE edge_type='conflicts' AND ((source_id=${memoryNodeId}::uuid AND target_id=${previous.id}::uuid) OR (source_id=${previous.id}::uuid AND target_id=${memoryNodeId}::uuid)))`;
+      }
+    }
+  }
 
-    await this.sql`
-      INSERT INTO mg_memory_nodes ${this.sql(
-        rows,
-        "id",
-        "segment_id",
-        "topic_node_id",
-        "agent_id",
-        "session_id",
-        "memory_type",
-        "source_type",
-        "subject",
-        "predicate",
-        "value",
-        "confidence",
-        "embedding",
-        "tags",
-        "source",
-        "source_url",
-        "source_title",
-        "provenance_speaker",
-        "provenance_message_indexes",
-        "provenance_session_id",
-        "extraction_method",
-        "superseded_by",
-        "decayed",
-        "has_conflict",
-        "agent_color",
-        "fleet_id",
-      )}
-    `;
+  private async insertMemoryEvidence(transaction: TransactionSql, memoryNodeId: string, node: MemoryNodeInsert): Promise<boolean> {
+    const rows = await transaction<{ id: string }[]>`INSERT INTO mg_memory_evidence (memory_node_id,segment_id,topic_node_id,session_id,original_subject,original_predicate,original_value,provenance_speaker,provenance_message_indexes,provenance_session_id,extraction_method)
+      VALUES (${memoryNodeId}::uuid,${node.segmentId},${node.topicNodeId},${node.sessionId},${node.subject},${node.predicate},${node.value},${node.provenance?.speaker ?? null},${node.provenance ? transaction.array(node.provenance.messageIndexes) : null}::int[],${node.provenance?.sessionId ?? null},${node.provenance?.extractionMethod ?? null})
+      ON CONFLICT (memory_node_id,segment_id,provenance_message_indexes) DO NOTHING RETURNING id`;
+    return rows.length > 0;
   }
 
   async getMemoriesBySegment(segmentId: string): Promise<MemoryNode[]> {
@@ -1087,6 +1127,12 @@ export class PostgresGraphStore implements GraphStore {
     `;
 
     return rows.map((row) => this.rowToMemoryEdge(row));
+  }
+
+  async getMemoryRevision(sessionIds: string[]): Promise<string> {
+    if (sessionIds.length === 0) return "empty";
+    const rows = await this.sql<{ revision: string }[]>`SELECT md5(COALESCE(string_agg(id::text || ':' || COALESCE(superseded_by::text,'') || ':' || decayed::text || ':' || forgotten::text || ':' || has_conflict::text || ':' || reinforcement_count::text, ',' ORDER BY id),'')) AS revision FROM mg_memory_nodes WHERE session_id=ANY(${this.sql.array(sessionIds)})`;
+    return rows[0]?.revision ?? "empty";
   }
 
   async getMemoryHistoryById(
@@ -2147,15 +2193,14 @@ export class PostgresGraphStore implements GraphStore {
     predicate: string,
     options: MemoryHistoryOptions = {},
   ): Promise<MemoryNode[]> {
-    const normalizedSubject = this.normalizeMemoryHistoryPart(subject);
-    const normalizedPredicate = this.normalizeMemoryHistoryPart(predicate);
+    const canonical = canonicalizeFactParts(subject, predicate);
 
     if (options.sessionId) {
       const rows = await this.sql<MemoryNodeRow[]>`
         SELECT *
         FROM mg_memory_nodes
-        WHERE lower(regexp_replace(trim(subject), '[[:space:]]+', ' ', 'g')) = ${normalizedSubject}
-          AND lower(regexp_replace(trim(predicate), '[[:space:]]+', ' ', 'g')) = ${normalizedPredicate}
+        WHERE COALESCE(canonical_subject,lower(regexp_replace(trim(subject), '[[:space:]]+', ' ', 'g')))=${canonical.subject}
+          AND COALESCE(canonical_predicate,lower(regexp_replace(trim(predicate), '[[:space:]]+', ' ', 'g')))=${canonical.predicate}
           AND session_id = ${options.sessionId}
         ORDER BY created_at ASC, id ASC
       `;
@@ -2166,8 +2211,8 @@ export class PostgresGraphStore implements GraphStore {
     const rows = await this.sql<MemoryNodeRow[]>`
       SELECT *
       FROM mg_memory_nodes
-      WHERE lower(regexp_replace(trim(subject), '[[:space:]]+', ' ', 'g')) = ${normalizedSubject}
-        AND lower(regexp_replace(trim(predicate), '[[:space:]]+', ' ', 'g')) = ${normalizedPredicate}
+      WHERE COALESCE(canonical_subject,lower(regexp_replace(trim(subject), '[[:space:]]+', ' ', 'g')))=${canonical.subject}
+        AND COALESCE(canonical_predicate,lower(regexp_replace(trim(predicate), '[[:space:]]+', ' ', 'g')))=${canonical.predicate}
       ORDER BY created_at ASC, id ASC
     `;
 
@@ -2543,6 +2588,9 @@ export class PostgresGraphStore implements GraphStore {
       CREATE INDEX IF NOT EXISTS idx_memory_nodes_session
       ON mg_memory_nodes(session_id)
     `;
+    await this.sql`CREATE INDEX IF NOT EXISTS idx_memory_nodes_canonical_fact ON mg_memory_nodes(session_id,canonical_fact_key) WHERE forgotten=FALSE AND decayed=FALSE AND superseded_by IS NULL`;
+    await this.sql`CREATE INDEX IF NOT EXISTS idx_memory_nodes_canonical_value ON mg_memory_nodes(session_id,canonical_value_key) WHERE canonical_value_key IS NOT NULL AND forgotten=FALSE AND decayed=FALSE AND superseded_by IS NULL`;
+    await this.sql`CREATE INDEX IF NOT EXISTS idx_memory_evidence_memory ON mg_memory_evidence(memory_node_id,created_at)`;
 
     await this.sql`
       CREATE INDEX IF NOT EXISTS idx_memory_nodes_active_lifecycle
@@ -2684,6 +2732,14 @@ export class PostgresGraphStore implements GraphStore {
       subject: row.subject,
       predicate: row.predicate,
       value: row.value,
+      ...(row.canonical_subject ? { canonicalSubject: row.canonical_subject } : {}),
+      ...(row.canonical_predicate ? { canonicalPredicate: row.canonical_predicate } : {}),
+      ...(row.canonical_value ? { canonicalValue: row.canonical_value } : {}),
+      ...(row.canonical_fact_key ? { canonicalFactKey: row.canonical_fact_key } : {}),
+      ...(row.canonical_value_key ? { canonicalValueKey: row.canonical_value_key } : {}),
+      canonicalizationVersion: row.canonicalization_version ?? 1,
+      reinforcementCount: row.reinforcement_count ?? 1,
+      lastReinforcedAt: row.last_reinforced_at,
       confidence: row.confidence,
       embedding: parseVector(row.embedding),
       tags: normalizeTags(row.tags ?? []),
