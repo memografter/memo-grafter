@@ -2,10 +2,13 @@ import { computeMemoryDecayScore } from "./decayScoring.js";
 import type { CrawlerPass, CrawlerPassContext, CrawlerPassResult } from "./types.js";
 
 export interface DecayScoringPassOptions {
+  /** Observe proposed retirements by default; enforce after application-specific evaluation. */
+  mode?: "observe" | "enforce";
   halfLifeDays?: number;
   minScore?: number;
   now?: () => Date;
-  updateConfidence?: boolean;
+  /** Grace period for new or migrated quality. Default 7 days. */
+  minimumRetentionDays?: number;
 }
 
 const DEFAULT_HALF_LIFE_DAYS = 90;
@@ -16,13 +19,16 @@ export class DecayScoringPass implements CrawlerPass {
   private readonly halfLifeDays: number;
   private readonly minScore: number;
   private readonly now: () => Date;
-  private readonly updateConfidence: boolean;
+  private readonly minimumRetentionDays: number;
+  private readonly mode: "observe" | "enforce";
 
   constructor(options: DecayScoringPassOptions = {}) {
+    this.mode = options.mode ?? "observe";
     this.halfLifeDays = options.halfLifeDays ?? DEFAULT_HALF_LIFE_DAYS;
     this.minScore = options.minScore ?? DEFAULT_MIN_SCORE;
     this.now = options.now ?? (() => new Date());
-    this.updateConfidence = options.updateConfidence ?? false;
+    this.minimumRetentionDays = options.minimumRetentionDays ?? 7;
+    if (!Number.isFinite(this.minimumRetentionDays) || this.minimumRetentionDays < 0) throw new Error("minimumRetentionDays must be finite and nonnegative.");
 
     if (!Number.isFinite(this.halfLifeDays) || this.halfLifeDays <= 0) {
       throw new Error("DecayScoringPass halfLifeDays must be greater than 0.");
@@ -42,6 +48,7 @@ export class DecayScoringPass implements CrawlerPass {
     const now = this.now();
     let decayScored = 0;
     let nodesDecayed = 0;
+    let wouldDecay = 0;
     let skippedAlreadyDecayed = 0;
     let skippedSuperseded = 0;
     let skippedForgotten = 0;
@@ -72,13 +79,14 @@ export class DecayScoringPass implements CrawlerPass {
       minDecayScore = minDecayScore === undefined ? score : Math.min(minDecayScore, score);
       maxDecayScore = maxDecayScore === undefined ? score : Math.max(maxDecayScore, score);
 
-      if (this.updateConfidence && context.store.updateMemoryNodeConfidence) {
-        await context.store.updateMemoryNodeConfidence(memory.id, clampConfidence(score));
-      }
 
-      if (score < this.minScore) {
-        const decayed = await context.store.markMemoryNodeDecayed(memory.id);
-        if (decayed) nodesDecayed += 1;
+      const retentionStart = Math.max(new Date(memory.createdAt).getTime(), memory.qualityUpdatedAt ? new Date(memory.qualityUpdatedAt).getTime() : 0);
+      if (score < this.minScore && now.getTime() - retentionStart >= this.minimumRetentionDays * 86400000) {
+        wouldDecay += 1;
+        if (this.mode === "enforce") {
+          const decayed = await context.store.markMemoryNodeDecayed(memory.id);
+          if (decayed) nodesDecayed += 1;
+        }
       }
     }
 
@@ -86,6 +94,7 @@ export class DecayScoringPass implements CrawlerPass {
       inspected: memories.length,
       decayScored,
       nodesDecayed,
+      wouldDecay,
       skippedAlreadyDecayed,
       skippedSuperseded,
       skippedForgotten,
@@ -93,8 +102,4 @@ export class DecayScoringPass implements CrawlerPass {
       ...(maxDecayScore !== undefined ? { maxDecayScore } : {}),
     };
   }
-}
-
-function clampConfidence(value: number): number {
-  return Math.max(0, Math.min(1, value));
 }

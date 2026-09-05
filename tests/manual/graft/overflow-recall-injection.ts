@@ -67,7 +67,7 @@ function retrievalResult(systemPrompt: string): RetrievalResult {
         subject: "user",
         predicate: "prefers",
         value: "compact recall blocks",
-        confidence: 1,
+        quality: { explicitness: 1, sourceReliability: 1, stability: 1, salience: 1 },
         embedding: [0.1, 0.2, 0.3],
         sourceUrl: null,
         sourceTitle: null,

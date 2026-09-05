@@ -47,7 +47,7 @@ const distinctionLLMAdapter: LLMAdapter = {
         subject: "user",
         predicate: "location",
         value,
-        confidence: 0.98,
+        quality: { explicitness: 0.98, sourceReliability: 0.98, stability: 0.98, salience: 0.98 },
       }],
     });
   },

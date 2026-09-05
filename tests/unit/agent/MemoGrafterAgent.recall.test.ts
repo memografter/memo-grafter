@@ -42,7 +42,7 @@ class FakeEmbedAdapter implements EmbedAdapter {
 
 function makeMemoryNode(
   overrides: Partial<MemoryNode> &
-    Pick<MemoryNode, "memoryType" | "subject" | "predicate" | "value" | "confidence">,
+    Pick<MemoryNode, "memoryType" | "subject" | "predicate" | "value" | "quality">,
 ): MemoryNode {
   const base: MemoryNode = {
     id: "memory-1",
@@ -55,7 +55,7 @@ function makeMemoryNode(
     subject: "subject",
     predicate: "predicate",
     value: "value",
-    confidence: 1,
+    quality: { explicitness: 1, sourceReliability: 1, stability: 1, salience: 1 },
     embedding: [0.1, 0.2],
     sourceUrl: null,
     sourceTitle: null,
@@ -71,7 +71,7 @@ function makeMemoryNode(
 
 function makeScoredMemoryNode(
   overrides: Partial<ScoredMemoryNode> &
-    Pick<MemoryNode, "memoryType" | "subject" | "predicate" | "value" | "confidence">,
+    Pick<MemoryNode, "memoryType" | "subject" | "predicate" | "value" | "quality">,
 ): ScoredMemoryNode {
   return {
     ...makeMemoryNode(overrides),
@@ -150,7 +150,7 @@ describe("MemoGrafterAgent.recall", () => {
           subject: "deployment",
           predicate: "uses",
           value: "blue-green rollout",
-          confidence: 0.9,
+          quality: { explicitness: 0.9, sourceReliability: 0.9, stability: 0.9, salience: 0.9 },
         }),
       ],
       nodes: [

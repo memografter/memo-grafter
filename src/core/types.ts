@@ -58,6 +58,17 @@ export interface MemoryProvenance {
   extractionMethod: MemoryExtractionMethod;
 }
 
+export interface MemoryQuality {
+  /** How directly evidence supports this statement; not a probability of truth. */
+  explicitness: number;
+  /** Trustworthiness of the source for this particular claim. */
+  sourceReliability: number;
+  /** Expected validity over time, independent of the memory's age. */
+  stability: number;
+  /** Expected usefulness beyond the originating exchange, independent of a query. */
+  salience: number;
+}
+
 export interface MemoryNode {
   id: string;
   segmentId: string;
@@ -77,7 +88,10 @@ export interface MemoryNode {
   canonicalizationVersion?: number;
   reinforcementCount?: number;
   lastReinforcedAt?: Date | null;
-  confidence: number;
+  quality: MemoryQuality;
+  qualityDefaulted?: Array<keyof MemoryQuality>;
+  qualityOrigin?: "extracted" | "provided" | "legacy";
+  qualityUpdatedAt?: Date | null;
   embedding: number[];
   tags?: string[];
   source?: string;
@@ -106,6 +120,7 @@ export interface MemoryEvidence {
   originalSubject: string;
   originalPredicate: string;
   originalValue: string;
+  quality: MemoryQuality;
   provenance?: MemoryProvenance | null;
   createdAt: Date;
 }
@@ -173,7 +188,10 @@ export interface ExtractedMemory {
   subject: string;
   predicate: string;
   value: string;
-  confidence: number;
+  quality: MemoryQuality;
+  qualityDefaulted?: Array<keyof MemoryQuality>;
+  qualityOrigin?: "extracted" | "provided" | "legacy";
+  qualityUpdatedAt?: Date | null;
   /** Message indexes are one-based and relative to the extraction prompt. */
   provenance: Omit<MemoryProvenance, "sessionId">;
 }
@@ -277,12 +295,7 @@ export interface RetrieverConfig {
   tagMode?: "all" | "any";
   scope?: "session" | "session-and-tags" | "tagged";
   sessionIds?: string[];
-  scoring?: {
-    /** Default 0.7. Weight applied to semantic similarity when ranking retrieved facts. */
-    similarityWeight?: number;
-    /** Default 0.3. Weight applied to memory confidence when ranking retrieved facts. */
-    confidenceWeight?: number;
-  };
+
   selection?: {
     /** Maximum number of topic blocks returned. Defaults to `limit`. */
     maxTopics?: number;
@@ -324,10 +337,12 @@ export interface TagFilterOptions {
 }
 
 export interface IngestOptions {
+  qualityPolicy?: import("../utils/memoryQuality.js").QualityAdmissionPolicy;
+  sourceReliability?: number;
   tags?: string[];
 }
 
-export interface IngestTextOptions {
+export interface IngestTextOptions extends IngestOptions {
   replace?: boolean;
   label?: string;
   source?: string;

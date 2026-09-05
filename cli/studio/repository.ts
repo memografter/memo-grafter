@@ -1,3 +1,4 @@
+interface StudioMemoryQuality { explicitness: number; sourceReliability: number; stability: number; salience: number }
 import type { Sql } from "postgres";
 
 export interface StudioSessionSummary {
@@ -28,7 +29,7 @@ export interface StudioMemorySearchResult {
   subject: string;
   predicate: string;
   value: string;
-  confidence: number;
+  quality: StudioMemoryQuality;
   tags?: string[];
   source?: string;
   sourceUrl: string | null;
@@ -128,7 +129,13 @@ interface MemoryRow {
   subject: string;
   predicate: string;
   value: string;
-  confidence: number;
+  quality_explicitness: number;
+  quality_source_reliability: number;
+  quality_stability: number;
+  quality_salience: number;
+  quality_defaulted: Array<keyof StudioMemoryQuality> | null;
+  quality_origin: "extracted" | "provided" | "legacy";
+  quality_updated_at: Date | null;
   tags: string[] | null;
   source: string | null;
   source_url: string | null;
@@ -400,7 +407,7 @@ export class StudioRepository {
           subject,
           predicate,
           value,
-          confidence,
+          quality_explicitness,quality_source_reliability,quality_stability,quality_salience,
           embedding::text AS embedding,
           tags,
           source,
@@ -559,7 +566,7 @@ export class StudioRepository {
       subject: row.subject,
       predicate: row.predicate,
       value: row.value,
-      confidence: row.confidence,
+      quality: { explicitness: row.quality_explicitness ?? 0.5, sourceReliability: row.quality_source_reliability ?? 0.5, stability: row.quality_stability ?? 0.5, salience: row.quality_salience ?? 0.5 },
       tags: row.tags ?? [],
       ...(row.source ? { source: row.source } : {}),
       sourceUrl: row.source_url,

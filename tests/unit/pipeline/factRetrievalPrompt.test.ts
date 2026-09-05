@@ -7,7 +7,7 @@ import type { MemoryNode, TopicNode } from "../../../src/core/types.js";
 
 function makeMemoryNode(
   overrides: Partial<MemoryNode> &
-    Pick<MemoryNode, "memoryType" | "subject" | "predicate" | "value" | "confidence">,
+    Pick<MemoryNode, "memoryType" | "subject" | "predicate" | "value" | "quality">,
 ): MemoryNode {
   const base: MemoryNode = {
     id: "memory-1",
@@ -20,7 +20,7 @@ function makeMemoryNode(
     subject: "subject",
     predicate: "predicate",
     value: "value",
-    confidence: 1,
+    quality: { explicitness: 1, sourceReliability: 1, stability: 1, salience: 1 },
     embedding: [0.1, 0.2],
     sourceUrl: null,
     sourceTitle: null,
@@ -68,13 +68,13 @@ describe("fact retrieval prompt", () => {
       subject: "user",
       predicate: "uses",
       value: "OAuth2 with PKCE",
-      confidence: 0.92,
+      quality: { explicitness: 0.92, sourceReliability: 0.92, stability: 0.92, salience: 0.92 },
     });
 
     const output = formatFactBlock([fact], topic);
 
     expect(output).toContain("## Authentication Flow (order: 2)");
-    expect(output).toContain("[FACT] user → uses: OAuth2 with PKCE (conf: 0.92)");
+    expect(output).toContain("[FACT] user → uses: OAuth2 with PKCE (evidence: 0.92, source: 0.92)");
     expect(output).toContain("\n> User authenticated via OAuth2.");
     expect(output).toMatch(/\n> /);
     expect(output.endsWith("\n")).toBe(true);
@@ -92,35 +92,35 @@ describe("fact retrieval prompt", () => {
         subject: "fact",
         predicate: "has",
         value: "a value",
-        confidence: 0.9,
+        quality: { explicitness: 0.9, sourceReliability: 0.9, stability: 0.9, salience: 0.9 },
       }),
       makeMemoryNode({
         memoryType: "insight",
         subject: "insight",
         predicate: "has",
         value: "a value",
-        confidence: 0.8,
+        quality: { explicitness: 0.8, sourceReliability: 0.8, stability: 0.8, salience: 0.8 },
       }),
       makeMemoryNode({
         memoryType: "question",
         subject: "question",
         predicate: "has",
         value: "a value",
-        confidence: 0.7,
+        quality: { explicitness: 0.7, sourceReliability: 0.7, stability: 0.7, salience: 0.7 },
       }),
       makeMemoryNode({
         memoryType: "task",
         subject: "task",
         predicate: "has",
         value: "a value",
-        confidence: 0.6,
+        quality: { explicitness: 0.6, sourceReliability: 0.6, stability: 0.6, salience: 0.6 },
       }),
       makeMemoryNode({
         memoryType: "reference",
         subject: "reference",
         predicate: "has",
         value: "a value",
-        confidence: 0.5,
+        quality: { explicitness: 0.5, sourceReliability: 0.5, stability: 0.5, salience: 0.5 },
       }),
     ];
 
@@ -131,7 +131,7 @@ describe("fact retrieval prompt", () => {
     }
   });
 
-  it("formatFactBlock formats confidence with toFixed(2)", () => {
+  it("formatFactBlock formats evidence quality with toFixed(2)", () => {
     const topic = makeTopicNode({
       label: "Confidence",
       summary: "Confidence scores were rendered.",
@@ -143,21 +143,21 @@ describe("fact retrieval prompt", () => {
         subject: "first",
         predicate: "scores",
         value: "high",
-        confidence: 0.9166666,
+        quality: { explicitness: 0.9166666, sourceReliability: 0.9166666, stability: 0.9166666, salience: 0.9166666 },
       }),
       makeMemoryNode({
         memoryType: "fact",
         subject: "second",
         predicate: "scores",
         value: "low",
-        confidence: 0.1,
+        quality: { explicitness: 0.1, sourceReliability: 0.1, stability: 0.1, salience: 0.1 },
       }),
     ];
 
     const output = formatFactBlock(facts, topic);
 
-    expect(output).toContain("conf: 0.92");
-    expect(output).toContain("conf: 0.10");
+    expect(output).toContain("evidence: 0.92");
+    expect(output).toContain("evidence: 0.10");
   });
 
   it("formatFactBlock handles an empty facts array", () => {

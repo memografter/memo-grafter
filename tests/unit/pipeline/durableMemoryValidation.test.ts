@@ -4,7 +4,7 @@ import { validateDurableMemories } from "../../../src/utils/extraction/durableMe
 
 function memory(speaker: ExtractedMemory["provenance"]["speaker"], indexes: number[], method: ExtractedMemory["provenance"]["extractionMethod"] = "explicit"): ExtractedMemory {
   return {
-    memoryType: "fact", subject: "user", predicate: "prefers", value: "vegetarian food", confidence: 0.95,
+    memoryType: "fact", subject: "user", predicate: "prefers", value: "vegetarian food", quality: { explicitness: 0.95, sourceReliability: 0.95, stability: 0.95, salience: 0.95 },
     provenance: { speaker, messageIndexes: indexes, extractionMethod: method },
   };
 }

@@ -1,3 +1,4 @@
+import { assessQualityAdmission, normalizeMemoryQualityWithDefaults } from "../../utils/memoryQuality.js";
 import { randomUUID } from "node:crypto";
 import { buildSegmentExtractionPrompt } from "../../prompts/segmentExtractionPrompt.js";
 import type { GraphStore } from "../../store/index.js";
@@ -169,15 +170,30 @@ export class SegmentProcessor {
     for (const rejection of validation.rejected) {
       console.warn(`SegmentProcessor rejected non-durable memory (${rejection.reason}):`, rejection.memory.value);
     }
+    let rejected = 0, wouldReject = 0;
     for (const memory of validation.accepted) {
+      const normalized = normalizeMemoryQualityWithDefaults(memory.quality);
+      const defaulted = [...new Set([...(memory.qualityDefaulted ?? []), ...normalized.defaulted])];
+      if (typeof options.sourceReliability === "number" && Number.isFinite(options.sourceReliability)) {
+        normalized.quality.sourceReliability = Math.max(0, Math.min(1, options.sourceReliability));
+        const index = defaulted.indexOf("sourceReliability");
+        if (index >= 0) defaulted.splice(index, 1);
+      }
+      const admission = assessQualityAdmission(normalized.quality, defaulted, options.qualityPolicy);
+      if (admission.reason !== "accepted") {
+        wouldReject++;
+        emitWarning(this.config.diagnostics, { code: "MEMORY_QUALITY_ADMISSION", operation: "ingest", stage: "topic-extraction", context: { sessionId: segment.sessionId, reason: admission.reason, mode: options.qualityPolicy?.mode ?? "observe" } });
+      }
+      if (!admission.accepted) { rejected++; continue; }
       const embedding = validateEmbedding(await this.embedder.embed(formatMemoryEmbeddingText(memory)), this.embedder.dimensions);
       nodes.push({ id: randomUUID(), segmentId: segment.id, topicNodeId: topicNode.id, sessionId: segment.sessionId,
         agentId: topicNode.agentId, agentColor: topicNode.agentColor, fleetId: topicNode.fleetId,
         memoryType: memory.memoryType, sourceType: options.sourceType ?? "conversation", subject: memory.subject,
-        predicate: memory.predicate, value: memory.value, confidence: memory.confidence, embedding,
+        predicate: memory.predicate, value: memory.value, quality: normalized.quality, qualityDefaulted: defaulted, qualityOrigin: "extracted", embedding,
         tags: topicNode.tags ?? [], ...(options.source ? { source: options.source } : {}), sourceUrl: null,
         sourceTitle: null, provenance: memory.absoluteProvenance, supersededBy: null, decayed: false });
     }
+    emitWarning(this.config.diagnostics, { code: "MEMORY_QUALITY_ADMISSION", operation: "ingest", stage: "topic-extraction", context: { sessionId: segment.sessionId, accepted: nodes.length, rejected, wouldReject, mode: options.qualityPolicy?.mode ?? "observe" } });
     return nodes;
   }
 }

@@ -67,7 +67,7 @@ function makeMemory(overrides: Partial<MemoryNodeInsert> & Pick<MemoryNodeInsert
     sourceType: "conversation",
     subject: "user",
     predicate: "location",
-    confidence: 1,
+    quality: { explicitness: 1, sourceReliability: 1, stability: 1, salience: 1 },
     embedding: vector,
     tags: ["manual:history"],
     sourceUrl: null,

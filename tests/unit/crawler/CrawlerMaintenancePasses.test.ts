@@ -50,11 +50,11 @@ class InMemoryMaintenanceStore implements CrawlerMaintenanceStore {
     return true;
   }
 
-  async updateMemoryNodeConfidence(memoryNodeId: string, confidence: number): Promise<boolean> {
+  async updateMemoryNodeQuality(memoryNodeId: string, quality: MemoryNode["quality"]): Promise<boolean> {
     const memory = this.memories.find((candidate) => candidate.id === memoryNodeId);
     if (!memory) return false;
 
-    memory.confidence = confidence;
+    memory.quality = quality;
     return true;
   }
 
@@ -97,7 +97,7 @@ function makeMemory(overrides: Partial<MemoryNode> = {}): MemoryNode {
     subject: "user",
     predicate: "location",
     value: "Delhi",
-    confidence: 1,
+    quality: { explicitness: 1, sourceReliability: 1, stability: 1, salience: 1 },
     embedding: [0.1, 0.2],
     sourceUrl: null,
     sourceTitle: null,
@@ -386,7 +386,7 @@ describe("crawler memory maintenance passes", () => {
       passes: [
         new ConflictDetectionPass(),
         new VersioningPass(),
-        new DecayScoringPass({
+        new DecayScoringPass({ mode: "enforce",
           now: () => new Date("2026-12-01T00:00:00.000Z"),
           minScore: 0.9,
         }),
@@ -415,14 +415,14 @@ describe("crawler memory maintenance passes", () => {
     const store = new InMemoryMaintenanceStore([
       makeMemory({
         id: "recent",
-        confidence: 0.9,
+        quality: { explicitness: 0.9, sourceReliability: 0.9, stability: 0.9, salience: 0.9 },
         createdAt: new Date("2026-01-09T00:00:00.000Z"),
       }),
     ]);
     const crawler = new MemoGrafterCrawler({
       store,
       passes: [
-        new DecayScoringPass({
+        new DecayScoringPass({ mode: "enforce",
           halfLifeDays: 30,
           minScore: 0.25,
           now: () => new Date("2026-01-10T00:00:00.000Z"),
@@ -447,14 +447,14 @@ describe("crawler memory maintenance passes", () => {
     const store = new InMemoryMaintenanceStore([
       makeMemory({
         id: "stale",
-        confidence: 0.4,
+        quality: { explicitness: 0.4, sourceReliability: 0.4, stability: 0.4, salience: 0.4 },
         createdAt: new Date("2025-01-10T00:00:00.000Z"),
       }),
     ]);
     const crawler = new MemoGrafterCrawler({
       store,
       passes: [
-        new DecayScoringPass({
+        new DecayScoringPass({ mode: "enforce",
           halfLifeDays: 30,
           minScore: 0.25,
           now: () => new Date("2026-01-10T00:00:00.000Z"),
@@ -477,7 +477,7 @@ describe("crawler memory maintenance passes", () => {
     const store = new InMemoryMaintenanceStore([
       makeMemory({
         id: "active",
-        confidence: 0.9,
+        quality: { explicitness: 0.9, sourceReliability: 0.9, stability: 0.9, salience: 0.9 },
         createdAt: new Date("2026-01-09T00:00:00.000Z"),
       }),
       makeMemory({
@@ -494,7 +494,7 @@ describe("crawler memory maintenance passes", () => {
     const crawler = new MemoGrafterCrawler({
       store,
       passes: [
-        new DecayScoringPass({
+        new DecayScoringPass({ mode: "enforce",
           halfLifeDays: 30,
           minScore: 0.25,
           now: () => new Date("2026-01-10T00:00:00.000Z"),
@@ -519,14 +519,14 @@ describe("crawler memory maintenance passes", () => {
     const store = new InMemoryMaintenanceStore([
       makeMemory({
         id: "stale",
-        confidence: 0.4,
+        quality: { explicitness: 0.4, sourceReliability: 0.4, stability: 0.4, salience: 0.4 },
         createdAt: new Date("2025-01-10T00:00:00.000Z"),
       }),
     ]);
     const crawler = new MemoGrafterCrawler({
       store,
       passes: [
-        new DecayScoringPass({
+        new DecayScoringPass({ mode: "enforce",
           halfLifeDays: 30,
           minScore: 0.25,
           now: () => new Date("2026-01-10T00:00:00.000Z"),
@@ -545,21 +545,20 @@ describe("crawler memory maintenance passes", () => {
     });
   });
 
-  it("updates confidence only when decay pass is configured to do so", async () => {
+  it("never overwrites quality with temporal decay", async () => {
     const store = new InMemoryMaintenanceStore([
       makeMemory({
         id: "old-confidence",
-        confidence: 0.8,
+        quality: { explicitness: 0.8, sourceReliability: 0.8, stability: 0.8, salience: 0.8 },
         createdAt: new Date("2025-12-11T00:00:00.000Z"),
       }),
     ]);
     const crawler = new MemoGrafterCrawler({
       store,
       passes: [
-        new DecayScoringPass({
+        new DecayScoringPass({ mode: "enforce",
           halfLifeDays: 30,
           minScore: 0,
-          updateConfidence: true,
           now: () => new Date("2026-01-10T00:00:00.000Z"),
         }),
       ],
@@ -567,6 +566,6 @@ describe("crawler memory maintenance passes", () => {
 
     await crawler.runOnce();
 
-    expect(store.memories[0]?.confidence).toBeCloseTo(0.4);
+    expect(store.memories[0]?.quality.explicitness).toBeCloseTo(0.8);
   });
 });

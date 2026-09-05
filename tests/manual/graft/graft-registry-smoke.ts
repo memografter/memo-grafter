@@ -20,7 +20,7 @@ class SmokeLLMAdapter implements LLMAdapter {
           subject: "user",
           predicate: "plans",
           value: "A Japan trip with quiet towns and cafes.",
-          confidence: 0.95,
+          quality: { explicitness: 0.95, sourceReliability: 0.95, stability: 0.95, salience: 0.95 },
         }],
       });
     }

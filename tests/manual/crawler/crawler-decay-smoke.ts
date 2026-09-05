@@ -43,7 +43,7 @@ const decaySmokeLLMAdapter: LLMAdapter = {
         subject: "user",
         predicate: "prefers",
         value: "quiet workspace",
-        confidence: 0.4,
+        quality: { explicitness: 0.4, sourceReliability: 0.4, stability: 0.4, salience: 0.4 },
       }],
     });
   },
@@ -84,14 +84,14 @@ try {
   await sql`
     UPDATE mg_memory_nodes
     SET created_at = ${new Date("2025-01-01T00:00:00.000Z")},
-        confidence = 0.4
+        quality_explicitness = 0.4, quality_source_reliability = 0.4, quality_stability = 0.4, quality_salience = 0.4, quality_updated_at = NOW() - INTERVAL '1 year'
     WHERE id = ${staleMemory.id}::uuid
   `;
 
   const crawler = new MemoGrafterCrawler({
     store: memo.store,
     passes: [
-      new DecayScoringPass({
+      new DecayScoringPass({ mode: "enforce",
         halfLifeDays: 30,
         minScore: 0.25,
         now: () => new Date("2026-01-01T00:00:00.000Z"),

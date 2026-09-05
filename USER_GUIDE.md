@@ -168,7 +168,7 @@ The Studio landing page shows sessions first. Select a session to open its works
 
 The selected-session header also reports read-only ingestion health and pending-message count. Studio does not reconcile or repair ingestion state.
 
-- **Graph:** shows topic nodes as the stable graph backbone. Memories are shown only for the selected topic, which keeps large sessions readable. Use node type, tag, and lifecycle filters to narrow the graph. Selecting a topic shows its summary, source metadata, lifecycle state, and connected memories. Selecting a memory shows its structured fact fields, confidence, lifecycle flags, source metadata, and related, conflict, or update edges.
+- **Graph:** shows topic nodes as the stable graph backbone. Memories are shown only for the selected topic, which keeps large sessions readable. Use node type, tag, and lifecycle filters to narrow the graph. Selecting a topic shows its summary, source metadata, lifecycle state, and connected memories. Selecting a memory shows its structured fact fields, quality, lifecycle flags, source metadata, and related, conflict, or update edges.
 - **Tables:** provides a read-only browser for the underlying `mg_*` tables using their original table names. Use the table selector and pagination controls to inspect rows; long cell values can be expanded in place.
 - **Invoke Preview:** builds the same framework-level `{ system, messages }` request plan used by `MemoGrafterAgent` or Fleet Worker invocation without calling the LLM. It shows context selection, structured messages, a readable plain-text rendering, raw memory context, retrieval explanation, and token usage. Persisted history is labelled **Database-backed preview** because live agent history is process-local. Provider adapters may transform the request, so Studio does not claim byte-for-byte provider payload equivalence. Invoke Preview requires an embedder; other Studio views remain available without one. An optional **Run with LLM** action executes the displayed short-lived plan using the server-side configured adapter and API key; Studio warns that provider charges may apply, and the returned response is not persisted or ingested.
 
@@ -347,7 +347,7 @@ Important fields:
 - `canonicalFactKey`, `canonicalValueKey`: session- and speaker-scoped identities used during reconciliation.
 - `reinforcementCount`: number of distinct accepted observations supporting the memory.
 - `lastReinforcedAt`: time of the latest additional observation, or `null` for an unrepeated memory.
-- `confidence`: confidence score from `0` to `1`.
+- `quality`: independent explicitness, sourceReliability, stability, and salience scores, each from `0` to `1`.
 - `topicNodeId`: parent topic node ID.
 - `tags`: optional normalized tags copied from the session or ingest call.
 - `decayed`: whether the memory is stale.
@@ -367,7 +367,7 @@ After durable-memory extraction and provenance validation, MemoGrafter canonical
 Each incoming memory is classified inside the session's storage transaction:
 
 - **New:** no active memory has the same canonical fact identity, so a new active node is inserted.
-- **Reinforcement:** an active memory has the same canonical fact and value. MemoGrafter reuses its ID, adds an evidence row, increments `reinforcementCount`, records `lastReinforcedAt`, and keeps the greater extraction confidence.
+- **Reinforcement:** an active memory has the same canonical fact and value. MemoGrafter reuses its ID, adds an evidence row, increments `reinforcementCount`, records `lastReinforcedAt`, and retains the stronger supporting explicitness/reliability pair. Repetition does not increase stability or salience, and replayed evidence does not increment counts.
 - **Update:** the fact identity matches, the value differs, and the new value contains an explicit replacement cue such as `actually`, `now`, `changed to`, or `instead`. A new active node is inserted, previous active values point to it through `supersededBy`, and `newer --updates--> older` edges are created.
 - **Conflict:** the fact identity matches but the values differ without an explicit replacement cue. Both assertions remain active, receive `hasConflict`, and are connected by `conflicts` edges.
 
@@ -654,7 +654,7 @@ History results are read-only and derived from existing memory rows plus `supers
 - `"decayed"`: crawler decay marked the memory stale.
 - `"forgotten"`: an application explicitly forgot the memory.
 
-`getMemoryDiff()` is structural. It compares stored fields such as `value`, `confidence`, lifecycle flags, tags, source metadata, and timestamps. It does not call an LLM or generate prose explanations.
+`getMemoryDiff()` is structural. It compares stored fields such as `value`, `quality`, lifecycle flags, tags, source metadata, and timestamps. It does not call an LLM or generate prose explanations.
 
 ### Session Tags
 
@@ -694,10 +694,6 @@ const result = await agent.recall("deployment config", {
   tags: ["project:memo-grafter"],
   tagMode: "all",
   scope: "session-and-tags",
-  scoring: {
-    similarityWeight: 0.7,
-    confidenceWeight: 0.3,
-  },
   cache: {
     ttlSeconds: 90,
   },
@@ -731,8 +727,6 @@ Options:
 - `tags`: optional normalized tag filter.
 - `tagMode`: `"all"` requires every requested tag, `"any"` accepts at least one requested tag. Defaults to `"all"`.
 - `scope`: `"session"` keeps normal current-session recall, `"session-and-tags"` filters current-session recall by tags, and `"tagged"` searches across sessions matching the tags.
-- `scoring.similarityWeight`: weight applied to semantic similarity when ranking retrieved facts. Defaults to `0.7`.
-- `scoring.confidenceWeight`: weight applied to memory confidence when ranking retrieved facts. Defaults to `0.3`.
 - `cache.ttlSeconds`: per-call recall cache TTL override when `MemoGrafterConfig.cache` is enabled. Values are clamped to 60-120 seconds.
 - `contextualization.recentMessages`: optional caller-owned recent conversation used to resolve follow-ups such as “what else?” before embedding.
 - `contextualization.maxMessages`: maximum recent messages considered. Defaults to `8`.
@@ -980,23 +974,27 @@ Conflict detection is meant for mutually exclusive fact slots such as `user loca
 
 Versioning is meant for explicit replacements such as `user location Delhi` followed by `user location Actually Bangalore now`. The extraction prompt asks adapters to preserve update cues in memory values because the built-in crawler operates on stored memory rows and does not inspect the original conversation text.
 
-`DecayScoringPass` uses confidence-weighted exponential recency decay:
+`DecayScoringPass` uses quality-based persistence priority and exponential recency decay:
 
 ```text
-recency_factor = exp(-(ln(2) / half_life_days) * age_days)
-decay_score = confidence * recency_factor
+persistence_score = (explicitness + sourceReliability + 2 * stability + 2 * salience) / 6
+effective_half_life_days = half_life_days * (0.5 + stability)
+recency_factor = exp(-(ln(2) / effective_half_life_days) * age_days)
+decay_score = persistence_score * recency_factor
 ```
 
-If `decay_score < minScore`, the memory is marked `decayed: true`. Superseded memories, forgotten memories, and already decayed memories are skipped. Conservative defaults are used when options are omitted:
+In enforcement mode, if `decay_score < minScore` and the minimum retention period has elapsed, the memory is marked `decayed: true`. Observation mode reports `wouldDecay` without retiring memories. Superseded memories, forgotten memories, and already decayed memories are skipped. Conservative defaults are used when options are omitted:
 
 ```ts
 new DecayScoringPass({
+  mode: "observe", // Change to "enforce" after evaluating your data.
   halfLifeDays: 90,
   minScore: 0.25,
+  minimumRetentionDays: 7,
 });
 ```
 
-By default the pass does not change stored `confidence`; confidence is treated as extraction confidence, while decay score is temporal freshness. If you explicitly want the score written back as confidence, pass `updateConfidence: true`.
+The pass never changes quality. The retention grace period starts at the later of memory creation or quality update/migration time. The persistence formula is a provisional retention policy, not a probability of truth.
 
 When conflicts are found:
 
@@ -1555,10 +1553,6 @@ const retriever = new RetrieverPipeline(store, embedder, {
   limit: 8,
   minSimilarity: 0.55,
   tokenBudget: 1000,
-  scoring: {
-    similarityWeight: 0.7,
-    confidenceWeight: 0.3,
-  },
 });
 
 const result = await retriever.run(
@@ -1966,3 +1960,50 @@ Common `MemoGrafterAgent` methods:
 - `absorbFromAgent(sourceAgent, options)`: select and copy memory from another agent.
 - `removeGraft(nodeId)`: remove a registered graft node from the current session.
 - `close()`: close database and queue resources.
+
+## Memory quality and migration
+
+```ts
+import { normalizeMemoryQuality, computePersistenceScore, type MemoryQuality } from "memo-grafter";
+
+const quality: MemoryQuality = {
+  explicitness: 0.95,
+  sourceReliability: 0.9,
+  stability: 0.2,
+  salience: 0.9,
+};
+const persistenceScore = computePersistenceScore(quality);
+const unknown = normalizeMemoryQuality(undefined); // Every dimension is 0.5.
+
+await memo.ingestText("Deploy the billing patch tomorrow.", "project-session", {
+  qualityPolicy: { mode: "observe", minExplicitness: 0.3, minSourceReliability: 0.3 },
+  sourceReliability: 0.8, // Optional source assessment supplied by your application.
+});
+```
+
+| Dimension | Meaning | Example |
+| --- | --- | --- |
+| explicitness | How directly the evidence supports the statement | A directly confirmed task can score highly even if temporary. |
+| sourceReliability | Trustworthiness for this claim | An unknown document defaults to 0.5; explicit wording does not establish truth. |
+| stability | Expected validity over time | Tomorrow's task is less stable than an enduring preference. |
+| salience | Usefulness beyond the current exchange | An important task can be highly salient despite low stability. |
+
+Finite numbers are clamped to [0, 1]. Strings, booleans, null, missing fields, NaN, and infinities default independently to 0.5. `qualityDefaulted` identifies unknown dimensions and `qualityOrigin` identifies extracted, caller-provided, or legacy assessments. Defaults never mean maximum confidence. Quality contains no current-query relevance.
+
+Quality admission follows mandatory provenance checks. In observation mode, candidates are retained and diagnostics report proposed rejections. Enforcement skips candidates below either evidence threshold before embedding, reducing unnecessary embedding calls. Defaulted dimensions do not trigger rejection; stability and salience do not reject temporary tasks. Use `diagnostics.onWarning` to inspect `MEMORY_QUALITY_DEFAULTED` and `MEMORY_QUALITY_ADMISSION` events and their counts. Evaluate on representative data before enabling enforcement; the bundled fixtures are not a production accuracy benchmark.
+
+Retrieval ranks by query similarity; evidence quality only breaks equal-relevance ties. Returned facts carry quality metadata, and context includes concise evidence/source scores. Persistence, stability, and salience do not boost relevance. The existing candidate, topic, fact, and token limits still apply.
+
+This is a breaking API change: replace `confidence` with `quality`, remove `scoring.confidenceWeight` and the obsolete `scoring` configuration, and replace custom-store `updateMemoryNodeConfidence` with `updateMemoryNodeQuality(id, quality)`. Remove `updateConfidence` from decay configuration; quality cannot be overwritten by decay. Decay defaults to observation; opt into `mode: "enforce"` after calibration.
+
+Run the normal migration before starting the new runtime. It adds quality columns and neutral legacy defaults while preserving any old confidence column for audit/rollback. New writes use quality exclusively. Existing embeddings and evidence remain intact. Legacy confidence is never copied into four fabricated assessments. Re-extraction from original evidence, if desired, is a separate explicit operation.
+
+Live manual check (not included in accuracy or smoke suites):
+
+```bash
+npm run manual:memory-quality
+```
+
+This test reads `DATABASE_URL` and `OPENAI_API_KEY` from `.env`, runs the normal additive migration, and uses a unique session retained for Studio inspection. It asks three detailed questions: a Japan work trip, a schedule correction with tentative weekend plans, and a billing-service design question with permanent constraints and a provisional Redis experiment. Assistant responses, extraction and embeddings use live OpenAI adapters; the test supplies no memory scores. `MEMORY_QUALITY_MODEL` optionally overrides the default `gpt-4o-mini` model.
+
+After each question/response pair, the test calls `analyzeDetailed()` and reads back the actual topics and memories. Console tables and Markdown/JSON reports under `tests/manual/reports/memory-quality/` show topic summaries, new/updated memories, all four scores, defaults, provenance, and conflict/supersession state. Assertions check graph creation, bounded complete quality scores and user-message provenance. Review the report's semantic checklist to assess whether uncertainty, temporary plans and enduring constraints were represented correctly; exact scores and counts vary between live runs. Reports include the transcript and raw extraction responses and are git-ignored.

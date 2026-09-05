@@ -33,7 +33,7 @@ function makeMemory(overrides: Partial<MemoryNode> = {}): MemoryNode {
     subject: "user",
     predicate: "location",
     value: "Delhi",
-    confidence: 1,
+    quality: { explicitness: 1, sourceReliability: 1, stability: 1, salience: 1 },
     embedding: [0.1, 0.2],
     sourceUrl: null,
     sourceTitle: null,

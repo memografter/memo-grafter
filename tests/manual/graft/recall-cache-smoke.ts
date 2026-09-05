@@ -35,7 +35,7 @@ function makeMemoryNode(): MemoryNode & { similarity: number } {
     subject: "recall cache",
     predicate: "uses",
     value: "a shared Redis client",
-    confidence: 0.95,
+    quality: { explicitness: 0.95, sourceReliability: 0.95, stability: 0.95, salience: 0.95 },
     embedding: [0.1, 0.2, 0.3],
     sourceUrl: null,
     sourceTitle: null,

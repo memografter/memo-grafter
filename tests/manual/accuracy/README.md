@@ -14,7 +14,7 @@ npm run accuracy:memory -- --judge --write-doc
 npm run accuracy:retrieval-impact
 ```
 
-`accuracy:retrieval-impact` is a deterministic, provider-free A/B regression case. It compares the former similarity-cutoff/top-10 flow with top-40 candidate generation and adaptive selection, and fails unless the new path recovers a relevant high-confidence fact that the legacy path discards.
+`accuracy:retrieval-impact` is a deterministic, provider-free A/B regression case. It compares the former similarity-cutoff/top-10 flow with top-40 candidate generation and adaptive selection, and fails unless the new path recovers a relevant fact below the former similarity cutoff that the legacy path discards.
 
 Use `--strict` only when you want the current baseline thresholds to fail the command. Without it, accuracy misses are reported for analysis while operational failures still return a failing exit code.
 

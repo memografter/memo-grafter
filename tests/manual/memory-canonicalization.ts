@@ -13,7 +13,7 @@ async function add(value: string, order: number): Promise<void> {
   const segment: TopicSegment = { id: randomUUID(), sessionId, startIndex: order, endIndex: order, topicOrder: order, driftScore: 0, createdAt: new Date() };
   const topic: TopicNode = { id: randomUUID(), sessionId, segmentId: segment.id, label: "Database preference", summary: value, embedding, messageRange: [order, order], topicOrder: order, driftScore: 0, agentColor: null, fleetId: null, agentId: null, createdAt: new Date() };
   await store.saveSegmentWithNode?.(segment, topic);
-  const memory: MemoryNodeInsert = { id: randomUUID(), segmentId: segment.id, topicNodeId: topic.id, sessionId, agentId: null, memoryType: "fact", sourceType: "conversation", subject: order === 1 ? "The user" : "user", predicate: order === 1 ? "preference is" : "prefers", value, confidence: 0.95, embedding, sourceUrl: null, sourceTitle: null, provenance: { speaker: "user", messageIndexes: [order], sessionId, extractionMethod: "explicit" }, supersededBy: null, decayed: false, agentColor: null, fleetId: null };
+  const memory: MemoryNodeInsert = { id: randomUUID(), segmentId: segment.id, topicNodeId: topic.id, sessionId, agentId: null, memoryType: "fact", sourceType: "conversation", subject: order === 1 ? "The user" : "user", predicate: order === 1 ? "preference is" : "prefers", value, quality: { explicitness: 0.95, sourceReliability: 0.95, stability: 0.95, salience: 0.95 }, embedding, sourceUrl: null, sourceTitle: null, provenance: { speaker: "user", messageIndexes: [order], sessionId, extractionMethod: "explicit" }, supersededBy: null, decayed: false, agentColor: null, fleetId: null };
   await store.insertMemories([memory]);
 }
 

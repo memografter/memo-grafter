@@ -86,7 +86,7 @@ function makeMemoryNode(overrides: Partial<MemoryNode> = {}): MemoryNode {
     subject: "deployment",
     predicate: "uses",
     value: "blue-green rollout",
-    confidence: 0.9,
+    quality: { explicitness: 0.9, sourceReliability: 0.9, stability: 0.9, salience: 0.9 },
     embedding: [0.1, 0.2],
     sourceUrl: null,
     sourceTitle: null,

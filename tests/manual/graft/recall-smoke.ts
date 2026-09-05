@@ -20,7 +20,7 @@ function printRecall(label: string, result: RetrievalResult): void {
     console.log(
       `  [${fact.memoryType}] ${fact.subject} ${fact.predicate}: ${fact.value}`,
     );
-    console.log(`    similarity: ${fact.similarity.toFixed(3)} | confidence: ${fact.confidence}`);
+    console.log(`    similarity: ${fact.similarity.toFixed(3)} | explicitness: ${fact.quality.explicitness}`);
   }
 
   console.log(`Nodes: ${result.nodes.length}`);

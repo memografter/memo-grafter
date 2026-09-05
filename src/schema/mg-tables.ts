@@ -1,7 +1,7 @@
 import { mgExtension, mgIndex, mgTable } from "./builders.js";
 
 export const memoGrafterMigrationTableName = "mg_migrations";
-export const memoGrafterCurrentMigrationVersion = 4;
+export const memoGrafterCurrentMigrationVersion = 5;
 
 export const memoGrafterExtensions = [
   mgExtension({
@@ -97,7 +97,13 @@ export const memoGrafterTables = [
       { name: "canonicalization_version", type: "int", default: "1" },
       { name: "reinforcement_count", type: "int", default: "1" },
       { name: "last_reinforced_at", type: "timestamptz", nullable: true },
-      { name: "confidence", type: "float", default: "1.0" },
+      { name: "quality_explicitness", type: "float", default: "0.5" },
+      { name: "quality_source_reliability", type: "float", default: "0.5" },
+      { name: "quality_stability", type: "float", default: "0.5" },
+      { name: "quality_salience", type: "float", default: "0.5" },
+      { name: "quality_defaulted", type: "text[]", default: "'{explicitness,sourceReliability,stability,salience}'" },
+      { name: "quality_origin", type: "text", default: "legacy" },
+      { name: "quality_updated_at", type: "timestamptz", default: "now()" },
       { name: "embedding", type: "vector", nullable: true },
       { name: "tags", type: "text[]", default: "'{}'" },
       { name: "source", type: "text", nullable: true },
@@ -116,6 +122,7 @@ export const memoGrafterTables = [
       { name: "fleet_id", type: "text", nullable: true },
       { name: "created_at", type: "timestamptz", default: "now()" },
     ],
+    constraints: ["CHECK (quality_explicitness >= 0 AND quality_explicitness <= 1)","CHECK (quality_source_reliability >= 0 AND quality_source_reliability <= 1)","CHECK (quality_stability >= 0 AND quality_stability <= 1)","CHECK (quality_salience >= 0 AND quality_salience <= 1)"],
   }),
   mgTable({
     name: "mg_memory_evidence",
@@ -129,13 +136,20 @@ export const memoGrafterTables = [
       { name: "original_subject", type: "text" },
       { name: "original_predicate", type: "text" },
       { name: "original_value", type: "text" },
+      { name: "quality_explicitness", type: "float", default: "0.5" },
+      { name: "quality_source_reliability", type: "float", default: "0.5" },
+      { name: "quality_stability", type: "float", default: "0.5" },
+      { name: "quality_salience", type: "float", default: "0.5" },
+      { name: "quality_defaulted", type: "text[]", default: "'{explicitness,sourceReliability,stability,salience}'" },
+      { name: "quality_origin", type: "text", default: "legacy" },
+      { name: "quality_updated_at", type: "timestamptz", default: "now()" },
       { name: "provenance_speaker", type: "text", nullable: true },
       { name: "provenance_message_indexes", type: "int[]", nullable: true },
       { name: "provenance_session_id", type: "text", nullable: true },
       { name: "extraction_method", type: "text", nullable: true },
       { name: "created_at", type: "timestamptz", default: "now()" },
     ],
-    constraints: ["UNIQUE (memory_node_id, segment_id, provenance_message_indexes)"],
+    constraints: ["UNIQUE (memory_node_id, segment_id, provenance_message_indexes)","CHECK (quality_explicitness >= 0 AND quality_explicitness <= 1)","CHECK (quality_source_reliability >= 0 AND quality_source_reliability <= 1)","CHECK (quality_stability >= 0 AND quality_stability <= 1)","CHECK (quality_salience >= 0 AND quality_salience <= 1)"],
   }),
   mgTable({
     name: "mg_memory_edges",

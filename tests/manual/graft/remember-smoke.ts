@@ -23,7 +23,7 @@ class RememberSmokeLLMAdapter implements LLMAdapter {
           subject: "user",
           predicate: "prefers",
           value: "concise TypeScript examples.",
-          confidence: 0.99,
+          quality: { explicitness: 0.99, sourceReliability: 0.99, stability: 0.99, salience: 0.99 },
         }],
       });
     }
@@ -79,7 +79,7 @@ try {
   assert.equal(node.source, "remember", "remember() did not default topic source metadata");
   assert.equal(memory.source, "remember", "remember() did not default memory source metadata");
   assert.equal(memory.sourceType, "document", "remember() should reuse the ingestText source type");
-  assert.equal(memory.confidence, 0.99, "remember() did not preserve extracted memory confidence");
+  assert.equal(memory.quality.explicitness, 0.99, "remember() did not preserve extracted memory explicitness");
   assert.deepEqual(memory.tags, ["preference", "remember-smoke"], "remember() did not apply session tags");
 
   const recall = await agent.recall("TypeScript example preference", {

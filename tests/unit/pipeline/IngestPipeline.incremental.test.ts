@@ -27,7 +27,7 @@ class FakeLLMAdapter implements LLMAdapter {
         subject: "user",
         predicate: "discussed",
         value: "Japan travel preferences.",
-        confidence: 0.9,
+        quality: { explicitness: 0.9, sourceReliability: 0.9, stability: 0.9, salience: 0.9 },
         provenance: documentMode
           ? { speaker: "document", message_indexes: [1], extraction_method: "document-extraction" }
           : { speaker: "user", message_indexes: [1], extraction_method: "explicit" },

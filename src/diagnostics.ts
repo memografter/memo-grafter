@@ -15,6 +15,7 @@ export type MemoGrafterErrorCode =
 
 export type MemoGrafterWarningCode =
   | "BEST_EFFORT_OPERATION_FAILED" | "CACHE_UNAVAILABLE" | "EXTRACTION_ITEM_SKIPPED"
+  | "MEMORY_QUALITY_DEFAULTED" | "MEMORY_QUALITY_ADMISSION"
   | "EXTRACTION_FALLBACK_USED" | "BACKGROUND_INGEST_FAILED" | "QUERY_CONTEXTUALIZATION_FAILED";
 
 export interface IngestionFailureContext {
@@ -59,6 +60,7 @@ export type AdapterReadiness = ReadinessResult;
 
 const safeContextKeys = new Set([
   "sessionId", "messageRange", "messagesPersisted", "graphProcessed", "cursorAdvanced", "retrySafe", "jobId",
+  "fields", "reason", "accepted", "rejected", "wouldReject", "mode",
   "field", "expectedDimensions", "actualDimensions", "adapter", "provider", "checkId",
 ]);
 

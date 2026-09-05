@@ -22,7 +22,7 @@ class SmokeLLM implements LLMAdapter {
             subject: "memo-grafter deployment",
             predicate: "uses",
             value: "Staging uses blue-green rollout.",
-            confidence: 0.95,
+            quality: { explicitness: 0.95, sourceReliability: 0.95, stability: 0.95, salience: 0.95 },
           }],
         });
       }
@@ -37,7 +37,7 @@ class SmokeLLM implements LLMAdapter {
           subject: "mobile app",
           predicate: "uses",
           value: "React Native.",
-          confidence: 0.9,
+          quality: { explicitness: 0.9, sourceReliability: 0.9, stability: 0.9, salience: 0.9 },
         }],
       });
     }

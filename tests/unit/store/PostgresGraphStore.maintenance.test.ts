@@ -41,7 +41,7 @@ function makeMemoryRow(overrides: Partial<Record<string, unknown>> = {}): Record
     subject: "user",
     predicate: "location",
     value: "Delhi",
-    confidence: 1,
+    quality: { explicitness: 1, sourceReliability: 1, stability: 1, salience: 1 },
     embedding: [0.1, 0.2],
     tags: [],
     source: null,
@@ -113,14 +113,14 @@ describe("PostgresGraphStore maintenance methods", () => {
     expect(changed.calls[0]?.text).toContain("AND superseded_by IS NULL");
   });
 
-  it("reports whether memory confidence was updated", async () => {
+  it("reports whether memory quality was updated", async () => {
     const changed = createStoreWithSql([[{ id: "memory-1" }]]);
     const unchanged = createStoreWithSql([[]]);
 
-    await expect(changed.store.updateMemoryNodeConfidence("memory-1", 0.45)).resolves.toBe(true);
-    await expect(unchanged.store.updateMemoryNodeConfidence("memory-1", 0.45)).resolves.toBe(false);
+    await expect(changed.store.updateMemoryNodeQuality("memory-1", { explicitness: 0.45, sourceReliability: 0.5, stability: 0.5, salience: 0.5 })).resolves.toBe(true);
+    await expect(unchanged.store.updateMemoryNodeQuality("memory-1", { explicitness: 0.45, sourceReliability: 0.5, stability: 0.5, salience: 0.5 })).resolves.toBe(false);
 
-    expect(changed.calls[0]?.text).toContain("SET confidence =");
+    expect(changed.calls[0]?.text).toContain("SET quality_explicitness =");
     expect(changed.calls[0]?.values).toContain(0.45);
   });
 

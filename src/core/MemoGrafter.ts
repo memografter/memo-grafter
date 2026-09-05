@@ -619,6 +619,8 @@ export class MemoGrafter {
       ...(options.source ? { source: options.source } : {}),
       ...(options.tags ? { tags: options.tags } : {}),
       sourceType: "document",
+      ...(options.qualityPolicy ? { qualityPolicy: options.qualityPolicy } : {}),
+      ...(options.sourceReliability !== undefined ? { sourceReliability: options.sourceReliability } : {}),
     };
   }
 

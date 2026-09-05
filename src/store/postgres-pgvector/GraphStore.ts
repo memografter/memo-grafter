@@ -1,3 +1,5 @@
+import { normalizeMemoryQuality, normalizeMemoryQualityWithDefaults, reinforceMemoryQuality, compareQualityEvidence } from "../../utils/memoryQuality.js";
+import { memoryQualityMigrationSql } from "../../schema/memoryQualityMigration.js";
 import { randomUUID } from "node:crypto";
 import postgres, { type Sql, type TransactionSql } from "postgres";
 import type { FleetAgentRecord, GraphStore } from "../GraphStore.js";
@@ -70,7 +72,13 @@ interface MemoryNodeRow {
   canonicalization_version: number | null;
   reinforcement_count: number | null;
   last_reinforced_at: Date | null;
-  confidence: number;
+  quality_explicitness: number;
+  quality_source_reliability: number;
+  quality_stability: number;
+  quality_salience: number;
+  quality_defaulted: Array<keyof MemoryNode["quality"]> | null;
+  quality_origin: MemoryNode["qualityOrigin"];
+  quality_updated_at: Date | null;
   embedding: string | number[] | null;
   tags: string[] | null;
   source: string | null;
@@ -196,6 +204,14 @@ export class PostgresGraphStore implements GraphStore {
     const missingTables = memoGrafterTableNames.filter((name) => !tables.has(name));
 
     if (missingExtensions.length === 0 && missingTables.length === 0) {
+      const columns = await this.sql<{ table_name: string; column_name: string }[]>`
+        SELECT table_name, column_name FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name IN ('mg_memory_nodes', 'mg_memory_evidence')
+      `;
+      const required = ["quality_explicitness", "quality_source_reliability", "quality_stability", "quality_salience", "quality_defaulted", "quality_origin", "quality_updated_at"];
+      if (["mg_memory_nodes", "mg_memory_evidence"].some(table => required.some(column => !columns.some(row => row.table_name === table && row.column_name === column)))) {
+        throw new Error("MemoGrafter memory quality migration is required. Run: npx memo-grafter migrate");
+      }
       return;
     }
 
@@ -295,7 +311,6 @@ export class PostgresGraphStore implements GraphStore {
         canonicalization_version INT NOT NULL DEFAULT 1,
         reinforcement_count INT NOT NULL DEFAULT 1,
         last_reinforced_at TIMESTAMPTZ,
-        confidence    FLOAT NOT NULL DEFAULT 1.0,
         embedding     vector(1536),
         tags          TEXT[] NOT NULL DEFAULT '{}',
         source        TEXT,
@@ -395,6 +410,8 @@ export class PostgresGraphStore implements GraphStore {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE (memory_node_id, segment_id, provenance_message_indexes)
       )
     `;
+
+    await this.sql.unsafe(memoryQualityMigrationSql);
 
     await this.sql`
       CREATE TABLE IF NOT EXISTS mg_fleets (
@@ -1004,11 +1021,14 @@ export class PostgresGraphStore implements GraphStore {
   }
 
   private async reconcileAndInsertMemories(transaction: TransactionSql, nodes: MemoryNodeInsert[]): Promise<void> {
-    for (const node of nodes) {
+    for (const input of nodes) {
+      const normalized = normalizeMemoryQualityWithDefaults(input.quality);
+      const node = { ...input, quality: normalized.quality, qualityDefaulted: [...new Set([...(input.qualityDefaulted ?? []), ...normalized.defaulted])] };
       const canonical = canonicalizeMemory(node);
       const candidates = await transaction<MemoryNodeRow[]>`
         SELECT * FROM mg_memory_nodes WHERE session_id=${node.sessionId}
           AND forgotten=FALSE AND decayed=FALSE AND superseded_by IS NULL
+          AND (canonical_fact_key=${canonical.factKey} OR canonical_fact_key IS NULL)
         ORDER BY created_at DESC,id DESC FOR UPDATE`;
       const active: MemoryNodeRow[] = [];
       for (const candidate of candidates) {
@@ -1028,18 +1048,24 @@ export class PostgresGraphStore implements GraphStore {
       if (classification === "reinforcement" && equivalent) {
         memoryNodeId = equivalent.id;
         if (await this.insertMemoryEvidence(transaction, memoryNodeId, node)) {
-          await transaction`UPDATE mg_memory_nodes SET reinforcement_count=reinforcement_count+1,last_reinforced_at=NOW(),confidence=GREATEST(confidence,${node.confidence}) WHERE id=${memoryNodeId}::uuid`;
+          const existing = this.rowToMemoryNode(equivalent);
+          const quality = reinforceMemoryQuality(existing.quality, node.quality);
+          const stronger = compareQualityEvidence(node.quality, existing.quality) > 0;
+          const defaulted = [...(existing.qualityDefaulted ?? [])].filter(key => !stronger || (key !== "explicitness" && key !== "sourceReliability"));
+          if (stronger) defaulted.push(...(node.qualityDefaulted ?? []).filter(key => key === "explicitness" || key === "sourceReliability"));
+          await transaction`UPDATE mg_memory_nodes SET reinforcement_count=reinforcement_count+1,last_reinforced_at=NOW(),quality_explicitness=${quality.explicitness},quality_source_reliability=${quality.sourceReliability},quality_defaulted=${transaction.array(defaulted)}::text[] WHERE id=${memoryNodeId}::uuid`;
+
         }
         continue;
       }
       await transaction`INSERT INTO mg_memory_nodes (
         id,segment_id,topic_node_id,agent_id,session_id,memory_type,source_type,subject,predicate,value,
         canonical_subject,canonical_predicate,canonical_value,canonical_fact_key,canonical_value_key,canonicalization_version,
-        confidence,embedding,tags,source,source_url,source_title,provenance_speaker,provenance_message_indexes,
+        quality_explicitness,quality_source_reliability,quality_stability,quality_salience,quality_defaulted,quality_origin,quality_updated_at,embedding,tags,source,source_url,source_title,provenance_speaker,provenance_message_indexes,
         provenance_session_id,extraction_method,superseded_by,decayed,forgotten,has_conflict,agent_color,fleet_id
       ) VALUES (${node.id},${node.segmentId},${node.topicNodeId},${node.agentId},${node.sessionId},${node.memoryType},${node.sourceType},${node.subject},${node.predicate},${node.value},
         ${canonical.subject},${canonical.predicate},${canonical.value},${canonical.factKey},${canonical.valueKey},${canonical.version},
-        ${node.confidence},${toVectorLiteral(node.embedding)}::vector,${transaction.array(normalizeTags(node.tags))}::text[],${node.source ?? null},${node.sourceUrl},${node.sourceTitle},
+        ${node.quality.explicitness},${node.quality.sourceReliability},${node.quality.stability},${node.quality.salience},${transaction.array(node.qualityDefaulted ?? [])}::text[],${node.qualityOrigin ?? "provided"},NOW(),${toVectorLiteral(node.embedding)}::vector,${transaction.array(normalizeTags(node.tags))}::text[],${node.source ?? null},${node.sourceUrl},${node.sourceTitle},
         ${node.provenance?.speaker ?? null},${node.provenance ? transaction.array(node.provenance.messageIndexes) : null}::int[],${node.provenance?.sessionId ?? null},${node.provenance?.extractionMethod ?? null},
         ${node.supersededBy},${node.decayed},${node.forgotten ?? false},${classification === "conflict" || node.hasConflict === true},${node.agentColor},${node.fleetId}) ON CONFLICT (id) DO NOTHING`;
       await this.insertMemoryEvidence(transaction, memoryNodeId, node);
@@ -1056,8 +1082,17 @@ export class PostgresGraphStore implements GraphStore {
   }
 
   private async insertMemoryEvidence(transaction: TransactionSql, memoryNodeId: string, node: MemoryNodeInsert): Promise<boolean> {
-    const rows = await transaction<{ id: string }[]>`INSERT INTO mg_memory_evidence (memory_node_id,segment_id,topic_node_id,session_id,original_subject,original_predicate,original_value,provenance_speaker,provenance_message_indexes,provenance_session_id,extraction_method)
-      VALUES (${memoryNodeId}::uuid,${node.segmentId},${node.topicNodeId},${node.sessionId},${node.subject},${node.predicate},${node.value},${node.provenance?.speaker ?? null},${node.provenance ? transaction.array(node.provenance.messageIndexes) : null}::int[],${node.provenance?.sessionId ?? null},${node.provenance?.extractionMethod ?? null})
+    // The session advisory lock serializes ingestion. The null-provenance check also makes
+    // retries of legacy/direct writes with null provenance idempotent on PostgreSQL 14.
+    if (!node.provenance) {
+      const existing = await transaction<{ id: string }[]>`
+        SELECT id FROM mg_memory_evidence WHERE memory_node_id=${memoryNodeId}::uuid
+          AND segment_id=${node.segmentId} AND provenance_message_indexes IS NULL LIMIT 1
+      `;
+      if (existing.length) return false;
+    }
+    const rows = await transaction<{ id: string }[]>`INSERT INTO mg_memory_evidence (memory_node_id,segment_id,topic_node_id,session_id,original_subject,original_predicate,original_value,quality_explicitness,quality_source_reliability,quality_stability,quality_salience,quality_defaulted,quality_origin,quality_updated_at,provenance_speaker,provenance_message_indexes,provenance_session_id,extraction_method)
+      VALUES (${memoryNodeId}::uuid,${node.segmentId},${node.topicNodeId},${node.sessionId},${node.subject},${node.predicate},${node.value},${node.quality.explicitness},${node.quality.sourceReliability},${node.quality.stability},${node.quality.salience},${transaction.array(node.qualityDefaulted ?? [])}::text[],${node.qualityOrigin ?? "provided"},NOW(),${node.provenance?.speaker ?? null},${node.provenance ? transaction.array(node.provenance.messageIndexes) : null}::int[],${node.provenance?.sessionId ?? null},${node.provenance?.extractionMethod ?? null})
       ON CONFLICT (memory_node_id,segment_id,provenance_message_indexes) DO NOTHING RETURNING id`;
     return rows.length > 0;
   }
@@ -1131,7 +1166,7 @@ export class PostgresGraphStore implements GraphStore {
 
   async getMemoryRevision(sessionIds: string[]): Promise<string> {
     if (sessionIds.length === 0) return "empty";
-    const rows = await this.sql<{ revision: string }[]>`SELECT md5(COALESCE(string_agg(id::text || ':' || COALESCE(superseded_by::text,'') || ':' || decayed::text || ':' || forgotten::text || ':' || has_conflict::text || ':' || reinforcement_count::text, ',' ORDER BY id),'')) AS revision FROM mg_memory_nodes WHERE session_id=ANY(${this.sql.array(sessionIds)})`;
+    const rows = await this.sql<{ revision: string }[]>`SELECT md5(COALESCE(string_agg(id::text || ':' || COALESCE(superseded_by::text,'') || ':' || decayed::text || ':' || forgotten::text || ':' || has_conflict::text || ':' || reinforcement_count::text || ':' || quality_explicitness::text || ':' || quality_source_reliability::text || ':' || quality_stability::text || ':' || quality_salience::text || ':' || quality_defaulted::text || ':' || quality_origin || ':' || quality_updated_at::text, ',' ORDER BY id),'')) AS revision FROM mg_memory_nodes WHERE session_id=ANY(${this.sql.array(sessionIds)})`;
     return rows[0]?.revision ?? "empty";
   }
 
@@ -1371,14 +1406,15 @@ export class PostgresGraphStore implements GraphStore {
     return rows.length > 0;
   }
 
-  async updateMemoryNodeConfidence(memoryNodeId: string, confidence: number): Promise<boolean> {
+  async updateMemoryNodeQuality(memoryNodeId: string, value: MemoryNode["quality"]): Promise<boolean> {
+    const { quality, defaulted } = normalizeMemoryQualityWithDefaults(value);
     const rows = await this.sql<{ id: string }[]>`
       UPDATE mg_memory_nodes
-      SET confidence = ${confidence}
-      WHERE id = ${memoryNodeId}::uuid
-      RETURNING id
+      SET quality_explicitness = ${quality.explicitness}, quality_source_reliability = ${quality.sourceReliability},
+          quality_stability = ${quality.stability}, quality_salience = ${quality.salience},
+          quality_defaulted = ${this.sql.array(defaulted)}::text[], quality_origin = 'provided', quality_updated_at = NOW()
+      WHERE id = ${memoryNodeId}::uuid RETURNING id
     `;
-
     return rows.length > 0;
   }
 
@@ -1940,13 +1976,13 @@ export class PostgresGraphStore implements GraphStore {
       const copiedMemories = await transaction<{ id: string }[]>`
         INSERT INTO mg_memory_nodes (
           segment_id, topic_node_id, agent_id, session_id, memory_type, source_type,
-          subject, predicate, value, confidence, embedding, tags, source, source_url,
+          subject, predicate, value, quality_explicitness,quality_source_reliability,quality_stability,quality_salience,quality_defaulted,quality_origin,quality_updated_at, embedding, tags, source, source_url,
           source_title, provenance_speaker, provenance_message_indexes, provenance_session_id,
           extraction_method, superseded_by, decayed, forgotten, has_conflict, agent_color, fleet_id
         )
         SELECT
           ${segmentId}, ${copiedTopicId}, agent_id, ${request.targetSessionId}, memory_type, source_type,
-          subject, predicate, value, confidence, embedding, tags, source, source_url,
+          subject, predicate, value, quality_explicitness,quality_source_reliability,quality_stability,quality_salience,quality_defaulted,quality_origin,quality_updated_at, embedding, tags, source, source_url,
           source_title, provenance_speaker, provenance_message_indexes, provenance_session_id,
           extraction_method, NULL, FALSE, FALSE, has_conflict, agent_color, fleet_id
         FROM mg_memory_nodes
@@ -2092,7 +2128,7 @@ export class PostgresGraphStore implements GraphStore {
         subject,
         predicate,
         value,
-        confidence,
+        quality_explicitness,quality_source_reliability,quality_stability,quality_salience,quality_defaulted,quality_origin,quality_updated_at,
         embedding,
         tags,
         source,
@@ -2117,7 +2153,7 @@ export class PostgresGraphStore implements GraphStore {
         subject,
         predicate,
         value,
-        confidence,
+        quality_explicitness,quality_source_reliability,quality_stability,quality_salience,quality_defaulted,quality_origin,quality_updated_at,
         embedding,
         tags,
         source,
@@ -2322,7 +2358,9 @@ export class PostgresGraphStore implements GraphStore {
       "subject",
       "predicate",
       "value",
-      "confidence",
+      "quality",
+      "qualityDefaulted",
+      "qualityOrigin",
       "tags",
       "source",
       "sourceUrl",
@@ -2740,7 +2778,10 @@ export class PostgresGraphStore implements GraphStore {
       canonicalizationVersion: row.canonicalization_version ?? 1,
       reinforcementCount: row.reinforcement_count ?? 1,
       lastReinforcedAt: row.last_reinforced_at,
-      confidence: row.confidence,
+      quality: normalizeMemoryQuality({ explicitness: row.quality_explicitness, sourceReliability: row.quality_source_reliability, stability: row.quality_stability, salience: row.quality_salience }),
+      qualityDefaulted: row.quality_defaulted ?? [...normalizeMemoryQualityWithDefaults(undefined).defaulted],
+      qualityOrigin: row.quality_origin ?? "legacy",
+      qualityUpdatedAt: row.quality_updated_at ?? null,
       embedding: parseVector(row.embedding),
       tags: normalizeTags(row.tags ?? []),
       ...(row.source ? { source: row.source } : {}),
