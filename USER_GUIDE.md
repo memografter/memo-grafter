@@ -343,18 +343,37 @@ Important fields:
 
 - `memoryType`: `"fact"`, `"insight"`, `"question"`, `"task"`, or `"reference"`.
 - `subject`, `predicate`, `value`: the structured memory triple.
+- `canonicalSubject`, `canonicalPredicate`, `canonicalValue`: normalized forms used to compare equivalent memories.
+- `canonicalFactKey`, `canonicalValueKey`: session- and speaker-scoped identities used during reconciliation.
+- `reinforcementCount`: number of distinct accepted observations supporting the memory.
+- `lastReinforcedAt`: time of the latest additional observation, or `null` for an unrepeated memory.
 - `confidence`: confidence score from `0` to `1`.
 - `topicNodeId`: parent topic node ID.
 - `tags`: optional normalized tags copied from the session or ingest call.
 - `decayed`: whether the memory is stale.
 - `forgotten`: whether the memory has been explicitly hidden by an application.
 - `forgottenAt`: timestamp for the explicit forget action, or `null` when active.
-- `hasConflict`: whether crawler maintenance found a conflicting active fact.
+- `hasConflict`: whether ingestion reconciliation or crawler maintenance found a conflicting active fact.
 - `supersededBy`: newer memory ID when this memory has been replaced.
 
-Memory nodes are stored in `mg_memory_nodes`.
+Memory nodes are stored in `mg_memory_nodes`. Each accepted observation is also recorded in `mg_memory_evidence`, including its original wording, topic, segment, and validated provenance.
 
-`decayed`, `hasConflict`, and `supersededBy` are maintenance fields. `forgotten` is an application-controlled lifecycle field. Normal ingestion creates active memories. Optional crawler passes can later annotate existing memory rows, but they do not delete rows or rewrite topic summaries.
+`decayed` is a maintenance field and `forgotten` is an application-controlled lifecycle field. Normal ingestion can set `hasConflict` or `supersededBy` immediately while reconciling incoming memories. Optional crawler passes can still annotate older or unreconciled rows, but they do not delete rows or rewrite topic summaries.
+
+### Canonical Memory Reconciliation
+
+After durable-memory extraction and provenance validation, MemoGrafter canonicalizes each accepted `subject`, `predicate`, and `value` before it writes the memory graph. Canonicalization is deterministic and versioned. It normalizes casing, spacing, terminal punctuation, common predicate forms, and a small set of stable aliases such as `Postgres` and `PostgreSQL`. Original extracted text remains unchanged for display, history, and audit.
+
+Each incoming memory is classified inside the session's storage transaction:
+
+- **New:** no active memory has the same canonical fact identity, so a new active node is inserted.
+- **Reinforcement:** an active memory has the same canonical fact and value. MemoGrafter reuses its ID, adds an evidence row, increments `reinforcementCount`, records `lastReinforcedAt`, and keeps the greater extraction confidence.
+- **Update:** the fact identity matches, the value differs, and the new value contains an explicit replacement cue such as `actually`, `now`, `changed to`, or `instead`. A new active node is inserted, previous active values point to it through `supersededBy`, and `newer --updates--> older` edges are created.
+- **Conflict:** the fact identity matches but the values differ without an explicit replacement cue. Both assertions remain active, receive `hasConflict`, and are connected by `conflicts` edges.
+
+Fact identity is scoped by session and provenance speaker. A document assertion is therefore not merged with a user assertion merely because the words match. Replaying the same evidence does not increment reinforcement twice.
+
+Superseded memories remain available in graph snapshots and memory history, but normal recall and topic-memory hydration exclude them. When Redis recall caching is enabled, the cache key includes a revision of the relevant memory lifecycle state so a newly superseded value cannot remain visible through a warm cache.
 
 ### Graph Edges
 
@@ -1352,11 +1371,19 @@ Enables an opt-in Redis cache for targeted recall. MemoGrafter creates one share
 - `connectionString`: Redis URL.
 - `ttlSeconds`: cache TTL in seconds. Defaults to `90` and is clamped between `60` and `120`.
 
-Recall cache keys include the session ID, `candidateLimit`, candidate-strategy version, retrieval scope and tags, and a deterministic hash of the query embedding. Redis failures are logged as warnings and recall falls back to PostgreSQL search. The cache is disabled unless this section is present.
+Recall cache keys include the session ID, `candidateLimit`, candidate-strategy version, retrieval scope and tags, a database-derived memory lifecycle revision, and a deterministic hash of the query embedding. Reinforcement, supersession, conflict, decay, or forgetting changes that revision, preventing a warm cache from returning obsolete memory state. Redis failures are logged as warnings and recall falls back to PostgreSQL search. The cache is disabled unless this section is present.
 
 When tag-aware recall is used, cache keys also include recall `scope`, `tagMode`, and the normalized tag list. This prevents untagged, session-filtered, and cross-session tagged recall from sharing cached search results.
 
 ## Manual Smoke Tests
+
+Canonical memory reconciliation has a standalone database test and is intentionally not part of the smoke-test runner:
+
+```bash
+npx tsx --env-file=.env tests/manual/memory-canonicalization.ts
+```
+
+The script creates an isolated session, verifies that `Postgres` and `PostgreSQL` reinforce one node, introduces an unresolved `MySQL` conflict, then explicitly updates the fact to SQLite. It checks that the older values are preserved as superseded history and deletes the temporary session before closing.
 
 From this repository, run the session-tagging smoke with a real PostgreSQL database:
 

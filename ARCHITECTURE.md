@@ -52,7 +52,7 @@ The node-count guard avoids an embed and memory search on the first turn or whil
 
 `IngestPipeline` is responsible for turning a session message history into graph state.
 
-Memory extraction is selective rather than a transcript-to-facts conversion. Conversation memories must be supported by one or more user messages; assistant suggestions, questions, generated content, and acknowledgements do not become durable user state unless a later user message explicitly adopts them. Document ingestion uses document ownership. Before embedding, a deterministic validator checks the claimed speaker and supporting one-based prompt message indexes, converts them to absolute originating-session indexes, and rejects unsupported candidates. Persisted memory provenance contains the speaker, originating session, supporting message indexes, and extraction method. Legacy memory rows may have null provenance, while newly extracted rows carry it through graft and absorption copies.
+Memory extraction is selective rather than a transcript-to-facts conversion. Conversation memories must be supported by one or more user messages; assistant suggestions, questions, generated content, and acknowledgements do not become durable user state unless a later user message explicitly adopts them. Document ingestion uses document ownership. Before embedding, a deterministic validator checks the claimed speaker and supporting one-based prompt message indexes, converts them to absolute originating-session indexes, and rejects unsupported candidates. Persisted memory provenance contains the speaker, originating session, supporting message indexes, and extraction method. After validation, each memory is embedded and passed to canonical reconciliation during persistence. Legacy memory rows may have null provenance or canonical fields; reconciliation canonicalizes active legacy candidates lazily when it encounters them.
 
 ```text
 indexed messages + sessionId
@@ -162,12 +162,18 @@ For each segment it:
 3. builds and embeds the segment summary before graph persistence begins;
 4. prepares the topic node from the extracted fields;
 5. atomically saves the `TopicSegment` and `TopicNode`, preserving an existing topic ID on retry;
-6. embeds and inserts atomic `MemoryNode` records;
-7. builds semantic memory edges inside the topic when appropriate.
+6. embeds atomic `MemoryNode` candidates;
+7. atomically canonicalizes and classifies each candidate as new, reinforcement, update, or conflict;
+8. records distinct observations in `mg_memory_evidence` and applies lifecycle pointers or edges;
+9. builds semantic memory edges inside the topic when appropriate.
 
-Provider and embedding failures therefore leave buffered messages available for retry without creating orphan segment rows. Memory persistence remains best-effort after the topic is durable.
+Provider and embedding failures therefore leave buffered messages available for retry without creating orphan segment rows. Durable ingestion treats required memory reconciliation as part of the atomic commit; the legacy direct segment path retains best-effort memory processing after its topic is durable.
 
 The topic node is the coarse unit of conversation memory. Memory nodes are the finer-grained facts, insights, questions, tasks, or references used by targeted recall. When ingestion receives tags, the same normalized tag set is written to the topic node and every memory node produced for that segment.
+
+Canonical reconciliation is implemented at the PostgreSQL persistence boundary so both durable `commitPreparedIngestion()` and direct `insertMemories()` use the same rules. A session advisory lock and row locks serialize comparisons with active memory state. Exact canonical fact/value matches reinforce the existing node; explicit replacement cues create a new version and supersede every competing active value; other differing values remain unresolved conflicts. Memory edge creation and lifecycle updates occur in the same transaction as insertion.
+
+The canonical fact key contains session, provenance speaker, canonical subject, and canonical predicate. The canonical value key adds canonical value. Keys use a PostgreSQL-safe unit-separator character and carry `canonicalization_version` so normalization rules can evolve explicitly. Original wording remains on the memory row and in immutable evidence records.
 
 ### GrafterPipeline
 
@@ -192,7 +198,7 @@ The interface covers:
 - initialization and shutdown;
 - message buffer persistence;
 - segment, topic node, and topic edge persistence;
-- memory node insertion, memory lookup, and memory edge construction;
+- canonical memory reconciliation, evidence insertion, memory lookup, and memory edge construction;
 - optional session and memory tag updates and tag-aware read filters;
 - explicit lifecycle state updates for forgotten memories and suppressed/restored topics;
 - memory history and diff reads derived from memory rows and maintenance edges;
@@ -206,7 +212,7 @@ The interface covers:
 - fleet and agent metadata;
 - explicit session clearing.
 
-The built-in `PostgresGraphStore` creates and manages the current schema, including `mg_message_buffer`, `mg_segments`, `mg_topic_nodes`, `mg_topic_edges`, `mg_memory_nodes`, `mg_memory_edges`, `mg_sessions`, `mg_session_ingest_state`, `mg_graft_registry`, `mg_fleets`, and `mg_fleet_agents`, plus the `mg_migrations` metadata table. `mg_topic_nodes` and `mg_memory_nodes` both include `tags TEXT[] NOT NULL DEFAULT '{}'` plus GIN indexes for tag filters. `mg_memory_nodes` also carries `forgotten BOOLEAN NOT NULL DEFAULT FALSE` and `forgotten_at`; `mg_topic_nodes` carries `suppressed BOOLEAN NOT NULL DEFAULT FALSE` and `suppressed_at`.
+The built-in `PostgresGraphStore` creates and manages the current schema, including `mg_message_buffer`, `mg_segments`, `mg_topic_nodes`, `mg_topic_edges`, `mg_memory_nodes`, `mg_memory_evidence`, `mg_memory_edges`, `mg_sessions`, `mg_session_ingest_state`, `mg_graft_registry`, `mg_fleets`, and `mg_fleet_agents`, plus the `mg_migrations` metadata table. `mg_topic_nodes` and `mg_memory_nodes` both include normalized tags and GIN indexes. `mg_memory_nodes` carries canonical identity, reinforcement, conflict, supersession, decay, and forgetting state. `mg_memory_evidence` preserves every distinct supporting observation.
 
 The public `PostgresGraphStore.migrate()` method remains available for advanced CI, deploy, test, or constrained runtime tooling. It is an escape hatch around the CLI, not the recommended app startup path. Migration creates or updates extensions, core tables, compatibility columns, and indexes, then creates `mg_migrations` and records the current version only after the schema work succeeds. Normal applications should run `memo-grafter init`, `memo-grafter migrate`, and `memo-grafter doctor` outside request handling before constructing agents.
 
@@ -241,7 +247,7 @@ The store derives history from:
 - `mg_memory_edges` rows with `edge_type = 'conflicts'`;
 - lifecycle metadata such as `decayed`, `forgotten`, and `has_conflict`.
 
-`getMemoryHistory(memoryId)` anchors the lookup at a memory row, loads memories in the same session with the same normalized fact key, and folds in directly connected update/conflict edge endpoints. `getMemoryHistory(subject, predicate)` loads the complete fact-key lineage for the requested scope. `MemoGrafterAgent` passes its current session ID by default; direct `MemoGrafter` callers can provide a `sessionId` option.
+`getMemoryHistory(memoryId)` anchors the lookup at a memory row, loads memories in the same session with the same canonical subject and predicate, and folds in directly connected update/conflict edge endpoints. `getMemoryHistory(subject, predicate)` canonicalizes the requested parts and loads the complete lineage for that scope. `MemoGrafterAgent` passes its current session ID by default; direct `MemoGrafter` callers can provide a `sessionId` option. Reinforcement counts show how many distinct observations support each version.
 
 History reads intentionally include memory rows that active retrieval ignores, including superseded, decayed, forgotten, and suppressed-topic memories. This lets audit and governance tools answer what the system believed before an update and why a current fact replaced or conflicts with earlier data.
 
@@ -251,7 +257,7 @@ History reads intentionally include memory rows that active retrieval ignores, i
 
 `MemoGrafterCrawler` is an optional graph maintenance worker. It can be run manually with `runOnce()` or scheduled in-process with `start()` and `stop()`. The crawler does not require Redis or queues, and `intervalMs` only controls the recurring loop started by `start()`; it has no effect on a direct `runOnce()` call.
 
-The built-in maintenance passes are deterministic:
+The built-in maintenance passes remain deterministic integrity and legacy-data tools. Newly ingested PostgreSQL memories are already reconciled transactionally:
 
 - `ConflictDetectionPass` groups active memories by session, normalized `subject`, and normalized `predicate`. A group conflicts when it contains different normalized `value` strings and the newest value does not carry an explicit update cue. Decayed, forgotten, suppressed-topic, and already superseded memories are skipped.
 - `VersioningPass` uses a separate version classifier. It only accepts competing groups whose newest memory carries an explicit replacement or update cue such as `actually`, `now`, `changed to`, or `instead`, then marks older memories with `superseded_by` and creates version edges.
@@ -285,7 +291,7 @@ The recall path embeds the query once, then searches active memory and topic emb
 
 Recall can be tag-aware. With no tag options, recall stays scoped to the current session. With `tags`, the default scope is `session-and-tags`, which filters current-session memories by tag. With `scope: "tagged"`, recall can search active memories across sessions that match the supplied tags. Tag matching supports `tagMode: "all"` with PostgreSQL `@>` semantics and `tagMode: "any"` with `&&` semantics. Tags are normalized by trimming, lowercasing, deduplicating, and sorting before storage or retrieval.
 
-When `cache` config is provided, `MemoGrafter` owns one shared Redis client for recall caching. `RetrieverPipeline` uses that client only around raw memory and topic candidate generation, before hydration, ranking, adaptive selection, and prompt assembly. Cache keys include the session ID, candidate limit, candidate-strategy version, recall scope, tag mode, normalized tag list, and a short hash of the embedding. TTL is clamped to 60-120 seconds, defaulting to 90 seconds. Redis errors are logged as warnings and retrieval falls back to the store. Successful lifecycle changes clear recall cache keys so stale candidates do not reintroduce forgotten or suppressed graph state.
+When `cache` config is provided, `MemoGrafter` owns one shared Redis client for recall caching. `RetrieverPipeline` uses that client only around raw memory and topic candidate generation, before hydration, ranking, adaptive selection, and prompt assembly. Cache keys include the session ID, candidate limit, candidate-strategy version, recall scope, tag mode, normalized tag list, a database-derived revision of memory lifecycle state, and a short hash of the embedding. TTL is clamped to 60-120 seconds, defaulting to 90 seconds. Redis errors are logged as warnings and retrieval falls back to the store. The revision changes after reinforcement or lifecycle changes, so stale candidates cannot reintroduce superseded graph state.
 
 `MemoGrafterAgent.invoke()` also uses this path before each LLM call when the session has at least one topic node. It uses the current user message as the recall query, calls `recall()` with `inject.recallLimit` and `inject.recallMinSimilarity` defaults of `6` and `0.55`, injects the returned `systemPrompt` as a single prepended system message when facts are found, and keeps only the last `inject.recentWindowSize` raw messages. If the session has no topic nodes, recall returns no facts, or recall fails, the agent proceeds with raw history only and does not fail the foreground `invoke()` call.
 
@@ -312,15 +318,14 @@ The lifecycle for a normal conversation is:
 2. Drift detection splits the message range into topic segments.
 3. Each segment is saved in `mg_segments`.
 4. Each segment produces one topic node in `mg_topic_nodes`.
-5. Segment extraction may produce multiple memory nodes in `mg_memory_nodes`.
-   When session tags are supplied, topic and memory nodes receive the normalized tag array.
+5. Segment extraction may produce multiple memory candidates. Validated candidates are canonicalized and reconciled against active `mg_memory_nodes`; only new, updated, or conflicting assertions create nodes, while equivalent assertions reinforce existing nodes through `mg_memory_evidence`. When session tags are supplied, topic and memory nodes receive the normalized tag array.
 6. Topic edges are appended:
    - `temporal` edges link adjacent topic nodes;
    - `semantic` edges link similar topic nodes;
    - `reentry` edges link a returned topic to an earlier related topic.
 7. Memory edges may link semantically related memories within a topic.
 8. Grafted topic nodes are copied into a target session, registered in `mg_graft_registry`, linked to their source with `grafted` edges, and accompanied by copies of active memory nodes when those memories exist.
-9. Optional crawler passes can annotate active memory nodes with `has_conflict`, set `superseded_by` on older conflicting facts, mark stale active facts as `decayed`, and add `conflicts` or `updates` edges in `mg_memory_edges`.
+9. Optional crawler passes can reconcile legacy rows and apply decay maintenance. Current ingestion already sets `has_conflict`, `superseded_by`, and `conflicts` or `updates` edges transactionally.
 10. Applications can explicitly mark individual memory nodes as forgotten or suppress entire topic nodes. Those rows remain in the graph for audit/snapshot reads, but active recall, grafting, absorption, and crawler operations ignore them.
 
 During normal ingestion, existing graph state is not cleared. New topic nodes and memory nodes are appended after the stored ingest cursor, and new edges can connect them to prior native or grafted nodes. `clearSession()` is an explicit destructive reset for callers that intentionally want to remove stored session memory.
@@ -333,7 +338,8 @@ During normal ingestion, existing graph state is not cleared. New topic nodes an
 - **Incremental graph growth:** ingestion processes only new message ranges and preserves existing graph state by default; explicit `clearSession()` is the reset path.
 - **Separate topic and memory layers:** topic nodes preserve conversational structure, while memory nodes support precise fact-level recall.
 - **Optional tag filters:** tags are additive metadata on topic and memory rows. Untagged sessions keep existing behavior, while tagged recall can support project-scoped, planning-scoped, or future worker-routed retrieval.
-- **Non-destructive maintenance and pruning:** crawler passes and application lifecycle controls annotate memory state and topic state without deleting graph data or rewriting historical topic summaries.
+- **Ingestion-time graph integrity:** canonical classification, evidence recording, supersession, and conflict edges are committed atomically under the session lock.
+- **Non-destructive maintenance and pruning:** ingestion reconciliation, crawler passes, and application lifecycle controls preserve historical graph data and do not rewrite historical topic summaries.
 - **Invoke-time recall:** `MemoGrafterAgent.invoke()` recalls relevant active memories before answering whenever the session has graph content, while still falling back to raw history if recall is unavailable.
 - **Token-budgeted graft assembly:** graft prompt assembly respects token budgets by trimming context and includes maintenance notes when active memory facts supersede contradictory summary details.
 - **Semantic graft selection is additive:** `graftByRelevance()` uses topic-node vector search to choose graft seeds by natural-language query, then delegates to the existing graft assembly path. Existing `graft()` and `inject()` behavior remains unchanged.
@@ -344,7 +350,7 @@ During normal ingestion, existing graph state is not cleared. New topic nodes an
 - **Grafting is explicit and traceable:** memory transfer copies selected topic nodes and active atomic memories into a target session, records graph edges, and stores provenance in `mg_graft_registry` instead of silently mixing sessions.
 ## Durable Ingestion Boundary
 
-PostgreSQL-backed ingestion uses two phases. Preparation reads the immutable accepted message range, invokes providers, validates outputs, and constructs graph objects without graph writes. Commit locks the session and ingestion run, verifies the expected cursor, and atomically persists required segments, topics, memories, required edges, cursor advancement, and run completion. Semantic edges and telemetry remain best effort and can produce `completed_with_warnings`.
+PostgreSQL-backed ingestion uses two phases. Preparation reads the immutable accepted message range, invokes providers, validates outputs, and constructs graph objects without graph writes. Commit locks the session and ingestion run, verifies the expected cursor, and atomically persists required segments and topics, reconciles canonical memories, records evidence and lifecycle edges, advances the cursor, and completes the run. Semantic edges and telemetry remain best effort and can produce `completed_with_warnings`.
 
 `mg_ingestion_runs` is the durable authority for accepted, queued, running, retrying, completed, failed, cancelled, and abandoned work. Queue jobs carry only the stable run identity and range; workers reload messages from PostgreSQL, so retries cannot append the exchange again.
 ## Resilience And Ingestion Transparency
@@ -361,4 +367,4 @@ Optional cache failures do not fail retrieval. They produce a successful `Retrie
 | CLI doctor | invalid configuration, required checks | optional services | process-level | none |
 | Studio | API and storage | unavailable health metadata | request lifecycle | none |
 
-This phase adds no database migration. Deployments that already applied durable-ingestion migration 007 remain compatible. Sessions created before run tracking continue to be classified by the Phase 2 consistency inspector. `doctor --ingestion` is read-only; repairs remain explicit runtime calls through `reconcileSession()` or `reconcilePendingIngestion()`. Rolling back this code does not require a schema rollback, although older application code will not display the new error metadata or health view.
+Canonical reconciliation requires migration `008_memory_canonicalization.sql`, which adds canonical identity and reinforcement columns, the `mg_memory_evidence` table, and canonical lookup indexes. Deployments must run `npx memo-grafter migrate` before starting this version. Existing memory rows are preserved and receive canonical fields lazily when a later reconciliation inspects them. `doctor --ingestion` remains read-only; ingestion repairs remain explicit runtime calls through `reconcileSession()` or `reconcilePendingIngestion()`.
