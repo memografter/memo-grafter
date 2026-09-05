@@ -69,7 +69,7 @@ try {
   for (const { segment, memories } of memoriesBySegment) {
     console.log(`\nSegment ${segment.topicOrder} — ${memories.length} memories:`);
     for (const m of memories) {
-      console.log(`  [${m.memoryType}] ${m.subject} | ${m.predicate}: ${m.value} (confidence: ${m.confidence})`);
+      console.log(`  [${m.memoryType}] ${m.subject} | ${m.predicate}: ${m.value} (explicitness: ${m.quality.explicitness})`);
     }
   }
 
@@ -91,7 +91,7 @@ try {
   console.log(`Memories returned: ${matched.length}`);
   for (const m of matched) {
     console.log(`  [${m.memoryType}] ${m.subject} | ${m.predicate}: ${m.value}`);
-    console.log(`    similarity: ${m.similarity.toFixed(3)} | confidence: ${m.confidence}`);
+    console.log(`    similarity: ${m.similarity.toFixed(3)} | explicitness: ${m.quality.explicitness}`);
   }
 
   const memoryTokenEstimate = matched.reduce(

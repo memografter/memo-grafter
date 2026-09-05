@@ -2387,7 +2387,7 @@ export function renderStudioHtml(state: StudioFrontendState): string {
             mg_segments: ["id", "session_id", "start_index", "end_index", "topic_order", "drift_score", "created_at"],
             mg_topic_nodes: ["id", "session_id", "segment_id", "label", "summary", "embedding", "tags", "source", "message_range", "topic_order", "drift_score", "agent_color", "fleet_id", "agent_id", "suppressed", "suppressed_at", "pinned", "pinned_at", "created_at"],
             mg_topic_edges: ["src_id", "dst_id", "weight", "type"],
-            mg_memory_nodes: ["id", "segment_id", "topic_node_id", "agent_id", "session_id", "memory_type", "source_type", "subject", "predicate", "value", "confidence", "embedding", "tags", "source", "source_url", "source_title", "superseded_by", "decayed", "forgotten", "forgotten_at", "has_conflict", "agent_color", "fleet_id", "created_at"],
+            mg_memory_nodes: ["id", "segment_id", "topic_node_id", "agent_id", "session_id", "memory_type", "source_type", "subject", "predicate", "value", "quality_explicitness", "quality_source_reliability", "quality_stability", "quality_salience", "embedding", "tags", "source", "source_url", "source_title", "superseded_by", "decayed", "forgotten", "forgotten_at", "has_conflict", "agent_color", "fleet_id", "created_at"],
             mg_memory_edges: ["id", "source_id", "target_id", "edge_type", "weight", "created_at"],
             mg_fleets: ["id", "name", "created_at"],
             mg_fleet_agents: ["id", "fleet_id", "session_id", "agent_color", "created_at"],
@@ -2492,14 +2492,14 @@ export function renderStudioHtml(state: StudioFrontendState): string {
         }
 
         function renderMemoryTable(rows) {
-          return renderDataTable("Memories", rows.length, ["Subject", "Predicate", "Value", "Type", "Confidence", "Lifecycle", "Tags", "Created", "ID"], rows.map((row) => {
+          return renderDataTable("Memories", rows.length, ["Subject", "Predicate", "Value", "Type", "Quality", "Lifecycle", "Tags", "Created", "ID"], rows.map((row) => {
             const raw = row.raw;
             return tableRow(row, [
               clipped(raw.subject || "None", 160),
               clipped(raw.predicate || "None", 140),
               clipped(raw.value || "None", 320),
               escapeHtml(raw.memoryType || "Unknown"),
-              escapeHtml(raw.confidence == null ? "Unknown" : String(raw.confidence)),
+              escapeHtml(raw.quality == null ? "Unknown" : JSON.stringify(raw.quality)),
               badgeMarkup(row.lifecycle),
               tagsMarkup(raw.tags || []),
               escapeHtml(formatDate(raw.createdAt)),
@@ -2932,7 +2932,7 @@ export function renderStudioHtml(state: StudioFrontendState): string {
             memory.memoryType,
             memory.sourceType,
             memory.source,
-            memory.confidence == null ? "" : String(memory.confidence),
+            memory.quality == null ? "" : JSON.stringify(memory.quality),
             memoryLifecycle(memory),
             Array.isArray(memory.tags) ? memory.tags.join(" ") : ""
           ].filter(Boolean).join(" ").toLowerCase();
@@ -3373,7 +3373,7 @@ export function renderStudioHtml(state: StudioFrontendState): string {
 
           return [
             raw.memoryType || "memory",
-            "confidence " + (raw.confidence == null ? "unknown" : String(raw.confidence))
+            "quality " + (raw.quality == null ? "unknown" : JSON.stringify(raw.quality))
           ];
         }
 
@@ -3496,8 +3496,8 @@ export function renderStudioHtml(state: StudioFrontendState): string {
             return "range " + range + " · " + numberText((node.tags || []).length) + " tags";
           }
 
-          const confidence = raw.confidence == null ? "unknown" : String(raw.confidence);
-          return (raw.memoryType || "memory") + " · confidence " + confidence;
+          const quality = raw.quality == null ? "unknown" : JSON.stringify(raw.quality);
+          return (raw.memoryType || "memory") + " · quality " + quality;
         }
 
         function selectGraphNode(nodeId, graph) {
@@ -3715,7 +3715,7 @@ export function renderStudioHtml(state: StudioFrontendState): string {
             detailTextRow("Subject", raw.subject || "None"),
             detailTextRow("Predicate", raw.predicate || "None"),
             detailTextRow("Value", raw.value || "None"),
-            detailTextRow("Confidence", raw.confidence == null ? "Unknown" : String(raw.confidence)),
+            detailTextRow("Quality", raw.quality == null ? "Unknown" : JSON.stringify(raw.quality)),
             detailTextRow("Memory type", raw.memoryType || "Unknown"),
             detailTextRow("Source type", raw.sourceType || "Unknown"),
             detailRow("Tags", tagsMarkup(node.tags)),

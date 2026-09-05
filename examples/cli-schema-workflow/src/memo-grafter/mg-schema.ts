@@ -241,11 +241,13 @@ export const memoGrafterTables = {
         name: "value",
         type: "text",
       },
-      confidence: {
-        name: "confidence",
-        type: "float",
-        default: "1.0",
-      },
+      quality_explicitness: { name: "quality_explicitness", type: "float", default: "0.5" },
+      quality_source_reliability: { name: "quality_source_reliability", type: "float", default: "0.5" },
+      quality_stability: { name: "quality_stability", type: "float", default: "0.5" },
+      quality_salience: { name: "quality_salience", type: "float", default: "0.5" },
+      quality_defaulted: { name: "quality_defaulted", type: "text[]", default: "'{explicitness,sourceReliability,stability,salience}'" },
+      quality_origin: { name: "quality_origin", type: "text", default: "legacy" },
+      quality_updated_at: { name: "quality_updated_at", type: "timestamptz", default: "now()" },
       embedding: {
         name: "embedding",
         type: "vector",

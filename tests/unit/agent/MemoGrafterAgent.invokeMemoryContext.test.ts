@@ -69,7 +69,7 @@ function memory(overrides: Partial<MemoryNode> = {}): MemoryNode {
     subject: "traveler",
     predicate: "prefers",
     value: "quiet towns in Japan",
-    confidence: 1,
+    quality: { explicitness: 1, sourceReliability: 1, stability: 1, salience: 1 },
     embedding: [0.1, 0.2, 0.3],
     sourceUrl: null,
     sourceTitle: null,

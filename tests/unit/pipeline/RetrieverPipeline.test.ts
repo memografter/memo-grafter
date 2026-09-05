@@ -10,7 +10,7 @@ type ScoredMemoryNode = MemoryNode & { similarity: number };
 
 function makeMemoryNode(
   overrides: Partial<MemoryNode> &
-    Pick<MemoryNode, "memoryType" | "subject" | "predicate" | "value" | "confidence">,
+    Pick<MemoryNode, "memoryType" | "subject" | "predicate" | "value" | "quality">,
 ): MemoryNode {
   const base: MemoryNode = {
     id: "memory-1",
@@ -23,7 +23,7 @@ function makeMemoryNode(
     subject: "subject",
     predicate: "predicate",
     value: "value",
-    confidence: 1,
+    quality: { explicitness: 1, sourceReliability: 1, stability: 1, salience: 1 },
     embedding: [0.1, 0.2],
     sourceUrl: null,
     sourceTitle: null,
@@ -39,7 +39,7 @@ function makeMemoryNode(
 
 function makeScoredMemoryNode(
   overrides: Partial<ScoredMemoryNode> &
-    Pick<MemoryNode, "memoryType" | "subject" | "predicate" | "value" | "confidence">,
+    Pick<MemoryNode, "memoryType" | "subject" | "predicate" | "value" | "quality">,
 ): ScoredMemoryNode {
   return {
     ...makeMemoryNode(overrides),
@@ -108,8 +108,8 @@ describe("RetrieverPipeline", () => {
 
   it("allows a topic-only match to contribute its summary and active child memories", async () => {
     const topic = { ...makeTopicNode({ id: "topic-food", label: "Healthy North Indian Food", summary: "Healthy protein-rich North Indian meals." }), similarity: 0.96 };
-    const active = makeMemoryNode({ id: "active-food", topicNodeId: topic.id, memoryType: "preference", subject: "user", predicate: "prefers", value: "low-oil protein-rich meals", confidence: 0.9, embedding: [0.1, 0.2, 0.3] });
-    const forgotten = makeMemoryNode({ id: "forgotten-food", topicNodeId: topic.id, memoryType: "fact", subject: "user", predicate: "ate", value: "forgotten meal", confidence: 1, forgotten: true, embedding: [0.1, 0.2, 0.3] });
+    const active = makeMemoryNode({ id: "active-food", topicNodeId: topic.id, memoryType: "preference", subject: "user", predicate: "prefers", value: "low-oil protein-rich meals", quality: { explicitness: 0.9, sourceReliability: 0.9, stability: 0.9, salience: 0.9 }, embedding: [0.1, 0.2, 0.3] });
+    const forgotten = makeMemoryNode({ id: "forgotten-food", topicNodeId: topic.id, memoryType: "fact", subject: "user", predicate: "ate", value: "forgotten meal", quality: { explicitness: 1, sourceReliability: 1, stability: 1, salience: 1 }, forgotten: true, embedding: [0.1, 0.2, 0.3] });
     const pipeline = new RetrieverPipeline(makeStore({
       searchMemoryCandidates: async () => [],
       searchTopicCandidates: async () => [topic],
@@ -128,7 +128,7 @@ describe("RetrieverPipeline", () => {
 
   it("deduplicates a topic reached through both memory and topic search", async () => {
     const topic = { ...makeTopicNode({ id: "topic-both", label: "Both", summary: "Matched twice." }), similarity: 0.95 };
-    const fact = makeScoredMemoryNode({ id: "fact-both", topicNodeId: topic.id, memoryType: "fact", subject: "project", predicate: "uses", value: "topic-aware retrieval", confidence: 1, similarity: 0.9 });
+    const fact = makeScoredMemoryNode({ id: "fact-both", topicNodeId: topic.id, memoryType: "fact", subject: "project", predicate: "uses", value: "topic-aware retrieval", quality: { explicitness: 1, sourceReliability: 1, stability: 1, salience: 1 }, similarity: 0.9 });
     const result = await new RetrieverPipeline(makeStore({
       searchMemoryCandidates: async () => [fact],
       searchTopicCandidates: async () => [topic],
@@ -160,7 +160,7 @@ describe("RetrieverPipeline", () => {
     expect(Object.keys(store).filter((key) => /save|insert|append|edge/i.test(key))).toEqual([]);
   });
   it("returns structured degraded metadata when the optional cache is unavailable", async () => {
-    const fact = makeScoredMemoryNode({ memoryType: "fact", subject: "cache", predicate: "is", value: "optional", confidence: 1 });
+    const fact = makeScoredMemoryNode({ memoryType: "fact", subject: "cache", predicate: "is", value: "optional", quality: { explicitness: 1, sourceReliability: 1, stability: 1, salience: 1 } });
     const store = makeStore({ searchMemories: vi.fn(async () => [fact]), getTopicNode: async () => makeTopicNode({}) });
     const cache = { get: vi.fn(async () => { throw new Error("redis down"); }), setex: vi.fn(async () => "OK") } as unknown as Redis;
     const pipeline = new RetrieverPipeline(store, makeEmbedder(), { cache: { ttlSeconds: 90 } }, cache);
@@ -213,7 +213,7 @@ describe("RetrieverPipeline", () => {
       subject: "project",
       predicate: "uses",
       value: "tagged memory",
-      confidence: 0.9,
+      quality: { explicitness: 0.9, sourceReliability: 0.9, stability: 0.9, salience: 0.9 },
     });
     const topic = makeTopicNode({
       id: "topic-2",
@@ -260,7 +260,7 @@ describe("RetrieverPipeline", () => {
       subject: "old",
       predicate: "uses",
       value: "stale value",
-      confidence: 0.9,
+      quality: { explicitness: 0.9, sourceReliability: 0.9, stability: 0.9, salience: 0.9 },
       decayed: true,
       similarity: 0.95,
     });
@@ -270,7 +270,7 @@ describe("RetrieverPipeline", () => {
       subject: "current",
       predicate: "uses",
       value: "active value",
-      confidence: 0.9,
+      quality: { explicitness: 0.9, sourceReliability: 0.9, stability: 0.9, salience: 0.9 },
       decayed: false,
       similarity: 0.9,
     });
@@ -303,7 +303,7 @@ describe("RetrieverPipeline", () => {
       subject: "old",
       predicate: "uses",
       value: "superseded value",
-      confidence: 0.9,
+      quality: { explicitness: 0.9, sourceReliability: 0.9, stability: 0.9, salience: 0.9 },
       supersededBy: "11111111-1111-1111-1111-111111111111",
       similarity: 0.95,
     });
@@ -313,7 +313,7 @@ describe("RetrieverPipeline", () => {
       subject: "current",
       predicate: "uses",
       value: "active value",
-      confidence: 0.9,
+      quality: { explicitness: 0.9, sourceReliability: 0.9, stability: 0.9, salience: 0.9 },
       supersededBy: null,
       similarity: 0.9,
     });
@@ -344,7 +344,7 @@ describe("RetrieverPipeline", () => {
       subject: "user",
       predicate: "preference",
       value: "old value",
-      confidence: 1,
+      quality: { explicitness: 1, sourceReliability: 1, stability: 1, salience: 1 },
       forgotten: true,
     });
     const active = makeScoredMemoryNode({
@@ -353,7 +353,7 @@ describe("RetrieverPipeline", () => {
       subject: "user",
       predicate: "preference",
       value: "current value",
-      confidence: 1,
+      quality: { explicitness: 1, sourceReliability: 1, stability: 1, salience: 1 },
     });
     const pipeline = new RetrieverPipeline(
       makeStore({
@@ -377,7 +377,7 @@ describe("RetrieverPipeline", () => {
       subject: "user",
       predicate: "preference",
       value: "hidden topic fact",
-      confidence: 1,
+      quality: { explicitness: 1, sourceReliability: 1, stability: 1, salience: 1 },
     });
     const pipeline = new RetrieverPipeline(
       makeStore({
@@ -407,7 +407,7 @@ describe("RetrieverPipeline", () => {
       subject: "old",
       predicate: "uses",
       value: "stale value",
-      confidence: 0.9,
+      quality: { explicitness: 0.9, sourceReliability: 0.9, stability: 0.9, salience: 0.9 },
       decayed: true,
       similarity: 0.95,
     });
@@ -417,7 +417,7 @@ describe("RetrieverPipeline", () => {
       subject: "older",
       predicate: "uses",
       value: "superseded value",
-      confidence: 0.9,
+      quality: { explicitness: 0.9, sourceReliability: 0.9, stability: 0.9, salience: 0.9 },
       supersededBy: "11111111-1111-1111-1111-111111111111",
       similarity: 0.9,
     });
@@ -441,7 +441,7 @@ describe("RetrieverPipeline", () => {
       subject: "orphan",
       predicate: "has",
       value: "no topic",
-      confidence: 0.9,
+      quality: { explicitness: 0.9, sourceReliability: 0.9, stability: 0.9, salience: 0.9 },
       similarity: 0.95,
     });
     const pipeline = new RetrieverPipeline(
@@ -459,7 +459,7 @@ describe("RetrieverPipeline", () => {
     });
   });
 
-  it("ranks blocks by highest confidence-weighted score", async () => {
+  it("ranks blocks by query similarity regardless of quality", async () => {
     const topicA = makeTopicNode({
       id: "topic-a",
       label: "Topic A",
@@ -480,7 +480,7 @@ describe("RetrieverPipeline", () => {
         subject: "a",
         predicate: "has",
         value: "high",
-        confidence: 0.1,
+        quality: { explicitness: 0.1, sourceReliability: 0.1, stability: 0.1, salience: 0.1 },
         similarity: 0.95,
       }),
       makeScoredMemoryNode({
@@ -490,7 +490,7 @@ describe("RetrieverPipeline", () => {
         subject: "b",
         predicate: "has",
         value: "only",
-        confidence: 1,
+        quality: { explicitness: 1, sourceReliability: 1, stability: 1, salience: 1 },
         similarity: 0.88,
       }),
       makeScoredMemoryNode({
@@ -500,7 +500,7 @@ describe("RetrieverPipeline", () => {
         subject: "a",
         predicate: "has",
         value: "low",
-        confidence: 0.9,
+        quality: { explicitness: 0.9, sourceReliability: 0.9, stability: 0.9, salience: 0.9 },
         similarity: 0.7,
       }),
     ];
@@ -515,10 +515,10 @@ describe("RetrieverPipeline", () => {
 
     const result = await pipeline.run("query", "session-1");
 
-    expect(result.nodes[0]?.id).toBe("topic-b");
+    expect(result.nodes[0]?.id).toBe("topic-a");
   });
 
-  it("uses confidence as a tie breaker for equal similarities", async () => {
+  it("uses evidence quality as a tie breaker for equal similarities", async () => {
     const topicA = makeTopicNode({
       id: "topic-a",
       label: "Topic A",
@@ -538,7 +538,7 @@ describe("RetrieverPipeline", () => {
       subject: "a",
       predicate: "has",
       value: "same similarity",
-      confidence: 0.2,
+      quality: { explicitness: 0.2, sourceReliability: 0.2, stability: 0.2, salience: 0.2 },
       similarity: 0.9,
     });
     const highConfidence = makeScoredMemoryNode({
@@ -548,7 +548,7 @@ describe("RetrieverPipeline", () => {
       subject: "b",
       predicate: "has",
       value: "same similarity",
-      confidence: 0.9,
+      quality: { explicitness: 0.9, sourceReliability: 0.9, stability: 0.9, salience: 0.9 },
       similarity: 0.9,
     });
     const pipeline = new RetrieverPipeline(
@@ -590,7 +590,7 @@ describe("RetrieverPipeline", () => {
       id: "below-old-floor",
       topicNodeId: topic.id,
       similarity: 0.42,
-      confidence: 1,
+      quality: { explicitness: 1, sourceReliability: 1, stability: 1, salience: 1 },
     });
     const pipeline = new RetrieverPipeline(
       makeStore({ searchMemories: async () => [fact], getTopicNode: async () => topic }),
@@ -610,8 +610,8 @@ describe("RetrieverPipeline", () => {
       ["topic-b", makeTopicNode({ id: "topic-b", label: "B", summary: "B" })],
     ]);
     const facts = [
-      makeScoredMemoryNode({ id: "strong", topicNodeId: "topic-a", similarity: 0.95, confidence: 1 }),
-      makeScoredMemoryNode({ id: "weak", topicNodeId: "topic-b", similarity: 0.4, confidence: 0.2 }),
+      makeScoredMemoryNode({ id: "strong", topicNodeId: "topic-a", similarity: 0.95, quality: { explicitness: 1, sourceReliability: 1, stability: 1, salience: 1 } }),
+      makeScoredMemoryNode({ id: "weak", topicNodeId: "topic-b", similarity: 0.4, quality: { explicitness: 0.2, sourceReliability: 0.2, stability: 0.2, salience: 0.2 } }),
     ];
     const pipeline = new RetrieverPipeline(
       makeStore({ searchMemories: async () => facts, getTopicNode: async (id) => topics.get(id) ?? null }),
@@ -625,7 +625,7 @@ describe("RetrieverPipeline", () => {
     expect(result.selection?.reason).toBe("relative-score");
   });
 
-  it("allows scoring weights to be tuned", async () => {
+  it("keeps high quality from overriding higher similarity", async () => {
     const topicA = makeTopicNode({
       id: "topic-a",
       label: "Topic A",
@@ -645,7 +645,7 @@ describe("RetrieverPipeline", () => {
       subject: "a",
       predicate: "has",
       value: "high similarity",
-      confidence: 0.1,
+      quality: { explicitness: 0.1, sourceReliability: 0.1, stability: 0.1, salience: 0.1 },
       similarity: 0.95,
     });
     const highConfidence = makeScoredMemoryNode({
@@ -655,7 +655,7 @@ describe("RetrieverPipeline", () => {
       subject: "b",
       predicate: "has",
       value: "high confidence",
-      confidence: 1,
+      quality: { explicitness: 1, sourceReliability: 1, stability: 1, salience: 1 },
       similarity: 0.88,
     });
     const pipeline = new RetrieverPipeline(
@@ -665,10 +665,6 @@ describe("RetrieverPipeline", () => {
       }),
       makeEmbedder(),
       {
-        scoring: {
-          similarityWeight: 1,
-          confidenceWeight: 0,
-        },
       },
     );
 
@@ -697,7 +693,7 @@ describe("RetrieverPipeline", () => {
       subject: "a",
       predicate: "has",
       value: "higher ranked value",
-      confidence: 0.9,
+      quality: { explicitness: 0.9, sourceReliability: 0.9, stability: 0.9, salience: 0.9 },
       similarity: 0.95,
     });
     const factB = makeScoredMemoryNode({
@@ -707,7 +703,7 @@ describe("RetrieverPipeline", () => {
       subject: "b",
       predicate: "has",
       value: "lower ranked value",
-      confidence: 0.9,
+      quality: { explicitness: 0.9, sourceReliability: 0.9, stability: 0.9, salience: 0.9 },
       similarity: 0.88,
     });
     const budget = countApproxTokens(formatFactBlock([factA], topicA));
@@ -748,7 +744,7 @@ describe("RetrieverPipeline", () => {
         subject: "a1",
         predicate: "has",
         value: "first",
-        confidence: 0.9,
+        quality: { explicitness: 0.9, sourceReliability: 0.9, stability: 0.9, salience: 0.9 },
         similarity: 0.95,
       }),
       makeScoredMemoryNode({
@@ -758,7 +754,7 @@ describe("RetrieverPipeline", () => {
         subject: "b1",
         predicate: "has",
         value: "first",
-        confidence: 0.9,
+        quality: { explicitness: 0.9, sourceReliability: 0.9, stability: 0.9, salience: 0.9 },
         similarity: 0.9,
       }),
       makeScoredMemoryNode({
@@ -768,7 +764,7 @@ describe("RetrieverPipeline", () => {
         subject: "a2",
         predicate: "has",
         value: "second",
-        confidence: 0.9,
+        quality: { explicitness: 0.9, sourceReliability: 0.9, stability: 0.9, salience: 0.9 },
         similarity: 0.7,
       }),
       makeScoredMemoryNode({
@@ -778,7 +774,7 @@ describe("RetrieverPipeline", () => {
         subject: "b2",
         predicate: "has",
         value: "second",
-        confidence: 0.9,
+        quality: { explicitness: 0.9, sourceReliability: 0.9, stability: 0.9, salience: 0.9 },
         similarity: 0.6,
       }),
     ];

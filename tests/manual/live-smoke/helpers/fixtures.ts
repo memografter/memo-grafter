@@ -82,7 +82,7 @@ export class DeterministicLLM implements LLMAdapter {
         subject: fixture[1],
         predicate: fixture[2],
         value: fixture[3],
-        confidence: 0.95,
+        quality: { explicitness: 0.95, sourceReliability: 0.95, stability: 0.95, salience: 0.95 },
         provenance: documentMode
           ? { speaker: "document", message_indexes: [1], extraction_method: "document-extraction" }
           : { speaker: "user", message_indexes: [1], extraction_method: "explicit" },

@@ -22,7 +22,7 @@ class FleetSharedMemorySmokeLLM implements LLMAdapter {
           subject: "refund policy",
           predicate: "allows",
           value: "Customers can request refunds within 30 days.",
-          confidence: 0.96,
+          quality: { explicitness: 0.96, sourceReliability: 0.96, stability: 0.96, salience: 0.96 },
         }],
       });
     }

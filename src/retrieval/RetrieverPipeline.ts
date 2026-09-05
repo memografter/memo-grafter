@@ -1,3 +1,4 @@
+import { compareQualityEvidence, normalizeMemoryQuality } from "../utils/memoryQuality.js";
 import { createHash } from "node:crypto";
 import type { Redis } from "ioredis";
 import {
@@ -39,8 +40,6 @@ interface RetrievedBlock {
   matchedBy: Array<"memory" | "topic">;
 }
 
-const DEFAULT_SIMILARITY_WEIGHT = 0.7;
-const DEFAULT_CONFIDENCE_WEIGHT = 0.3;
 const DEFAULT_CANDIDATE_LIMIT = 40;
 const DEFAULT_RELATIVE_SCORE_FLOOR = 0.75;
 const DEFAULT_SCORE_GAP_THRESHOLD = 0.15;
@@ -126,7 +125,9 @@ export class RetrieverPipeline {
       scope,
       hasConfiguredSessionIds && (sessionIds.length > 1 || sessionIds[0] !== sessionId),
     ))
-      .sort((a, b) => b.score - a.score || a.parentNode.id.localeCompare(b.parentNode.id));
+      .sort((a, b) => b.score - a.score
+        || compareQualityEvidence(b.facts[0]?.quality, a.facts[0]?.quality)
+        || a.parentNode.id.localeCompare(b.parentNode.id));
     const selectedBlocks = this.selectBlocks(rankedBlocks, limit);
     const includedBlocks: string[] = [];
     const facts: ScoredMemoryNode[] = [];
@@ -206,7 +207,7 @@ export class RetrieverPipeline {
       "mg:recall",
       sessionId,
       limit,
-      "candidates-v2",
+      "candidates-v3-quality",
       options.scope ?? "session",
       (this.config.sessionIds ?? []).join(","),
       options.tagMode ?? "all",
@@ -219,7 +220,8 @@ export class RetrieverPipeline {
       const hit = await this.cacheRedis.get(cacheKey);
 
       if (hit) {
-        return JSON.parse(hit) as CandidateSearchResult;
+        const cached = JSON.parse(hit) as CandidateSearchResult;
+        return { ...cached, memories: cached.memories.map(memory => ({ ...memory, quality: normalizeMemoryQuality(memory.quality) })) };
       }
 
     } catch (error: unknown) {
@@ -340,17 +342,13 @@ export class RetrieverPipeline {
   private rankFact(fact: ScoredMemoryNode): RankedMemoryNode {
     return {
       ...fact,
+      quality: normalizeMemoryQuality(fact.quality),
       retrievalScore: this.scoreFact(fact),
     };
   }
 
   private scoreFact(fact: ScoredMemoryNode): number {
-    const similarityWeight = this.config.scoring?.similarityWeight ?? DEFAULT_SIMILARITY_WEIGHT;
-    const confidenceWeight = this.config.scoring?.confidenceWeight ?? DEFAULT_CONFIDENCE_WEIGHT;
-    const similarity = this.clampScore(fact.similarity);
-    const confidence = this.clampScore(fact.confidence);
-
-    return similarity * similarityWeight + confidence * confidenceWeight;
+    return this.clampScore(fact.similarity);
   }
 
   private selectBlocks(
@@ -385,7 +383,7 @@ export class RetrieverPipeline {
   private compareFacts(a: RankedMemoryNode, b: RankedMemoryNode): number {
     return b.retrievalScore - a.retrievalScore
       || b.similarity - a.similarity
-      || b.confidence - a.confidence
+      || compareQualityEvidence(b.quality, a.quality)
       || this.timestamp(b.createdAt) - this.timestamp(a.createdAt)
       || a.id.localeCompare(b.id);
   }

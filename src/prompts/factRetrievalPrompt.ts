@@ -1,3 +1,4 @@
+import { normalizeMemoryQuality } from "../utils/memoryQuality.js";
 import type { MemoryNode, TopicNode } from "../core/types.js";
 
 const FACT_RETRIEVAL_SUBHEADER =
@@ -9,8 +10,9 @@ function compactSummary(summary: string): string {
 }
 
 function formatFactLine(fact: MemoryNode): string {
+  const quality = normalizeMemoryQuality(fact.quality);
   return `[${fact.memoryType.toUpperCase()}] ${fact.subject} → ${fact.predicate}: ` +
-    `${fact.value} (conf: ${fact.confidence.toFixed(2)})`;
+    `${fact.value} (evidence: ${quality.explicitness.toFixed(2)}, source: ${quality.sourceReliability.toFixed(2)})`;
 }
 
 export function formatFactBlock(facts: MemoryNode[], parentNode: TopicNode): string {

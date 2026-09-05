@@ -158,7 +158,7 @@ function createSegment(overrides: Partial<TopicSegment> = {}): TopicSegment {
         subject: "traveler",
         predicate: "prefers",
         value: "quiet towns",
-        confidence: 1,
+        quality: { explicitness: 1, sourceReliability: 1, stability: 1, salience: 1 },
         embedding: [],
         sourceUrl: null,
         sourceTitle: null,

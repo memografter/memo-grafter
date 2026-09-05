@@ -24,7 +24,7 @@ class SmokeLLMAdapter implements LLMAdapter {
           value: last.toLowerCase().includes("roadmap")
             ? "document import workflows."
             : "quiet morning planning.",
-          confidence: 0.95,
+          quality: { explicitness: 0.95, sourceReliability: 0.95, stability: 0.95, salience: 0.95 },
         }],
       });
     }

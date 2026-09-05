@@ -261,7 +261,7 @@ The built-in maintenance passes remain deterministic integrity and legacy-data t
 
 - `ConflictDetectionPass` groups active memories by session, normalized `subject`, and normalized `predicate`. A group conflicts when it contains different normalized `value` strings and the newest value does not carry an explicit update cue. Decayed, forgotten, suppressed-topic, and already superseded memories are skipped.
 - `VersioningPass` uses a separate version classifier. It only accepts competing groups whose newest memory carries an explicit replacement or update cue such as `actually`, `now`, `changed to`, or `instead`, then marks older memories with `superseded_by` and creates version edges.
-- `DecayScoringPass` scores non-superseded active memories with confidence-weighted exponential recency decay. Forgotten memories and suppressed-topic memories are skipped. Memories whose score falls below the configured threshold are marked `decayed = TRUE`.
+- `DecayScoringPass` scores non-superseded active memories with quality-based persistence priority and exponential recency decay. Forgotten memories and suppressed-topic memories are skipped. The default observation mode reports `wouldDecay`; enforcement marks eligible memories `decayed = TRUE` after the minimum retention period.
 
 Conflict grouping treats broad topic memories carefully when both the subject and predicate are generic, such as `user asked_about ...` or `conversation discussed ...`. Most broad topic rows are skipped because they describe what was discussed rather than mutually exclusive fact slots. Recognized travel destination plan rows are partitioned into a deterministic `travel-trip-plan` bucket and compared by destination, so `Goa trip plan` can conflict with `Vietnam trip plan`, while unrelated topics like `how to cook rajma chawal` or non-exclusive Vietnam subtopics do not join that conflict group. Plain disagreements remain active conflicts; they are not superseded merely because one memory is newer.
 
@@ -269,8 +269,10 @@ Decay scoring uses:
 
 ```text
 age_days = now - created_at
-recency_factor = exp(-(ln(2) / half_life_days) * age_days)
-decay_score = confidence * recency_factor
+persistence_score = (explicitness + sourceReliability + 2 * stability + 2 * salience) / 6
+effective_half_life_days = half_life_days * (0.5 + stability)
+recency_factor = exp(-(ln(2) / effective_half_life_days) * age_days)
+decay_score = persistence_score * recency_factor
 ```
 
 The crawler annotates existing memory rows and creates memory edges. It never deletes graph nodes. Conflict detection marks both sides with `has_conflict = TRUE` and creates an idempotent `conflicts` edge. Versioning creates an idempotent `updates` edge using this direction:
@@ -279,7 +281,7 @@ The crawler annotates existing memory rows and creates memory edges. It never de
 newer_memory --updates--> older_memory
 ```
 
-The original topic summaries are not rewritten. Topic summaries remain historical descriptions of the segment that produced them, while memory-node lifecycle fields and memory edges represent current fact status. The decay pass does not create edges by default; it only marks stale active memory rows as decayed. Stored extraction confidence remains unchanged unless a caller explicitly enables confidence updates on the pass.
+The original topic summaries are not rewritten. Topic summaries remain historical descriptions of the segment that produced them, while memory-node lifecycle fields and memory edges represent current fact status. The decay pass does not create edges by default; it only marks stale active memory rows as decayed. Stored quality never changes during decay. The default seven-day grace period starts at the later of creation or quality update/migration time.
 
 The crawler does not delete or prune existing conflict edges. If an older version of the crawler created a false-positive edge, that edge remains historical graph data until a future explicit cleanup pass or display-side active-edge filter handles it.
 
@@ -287,7 +289,7 @@ The crawler does not delete or prune existing conflict edges. If an older versio
 
 Targeted recall is handled by `RetrieverPipeline`, which is used by `MemoGrafterAgent.recall()`.
 
-The recall path embeds the query once, then searches active memory and topic embeddings in parallel. Memory and topic candidates are normalized into topic blocks, with either source allowed to introduce a topic. A direct topic match contributes its summary and up to three relevant active child memories; topics reached through both sources are deduplicated. Memory scores retain confidence weighting, topic scores use cosine similarity, and the existing adaptive topic-block selection remains responsible for relative-score, score-gap, fact, topic, and token limits.
+The recall path embeds the query once, then searches active memory and topic embeddings in parallel. Memory and topic candidates are normalized into topic blocks, with either source allowed to introduce a topic. A direct topic match contributes its summary and up to three relevant active child memories; topics reached through both sources are deduplicated. Memory and topic scores use cosine similarity. Evidence strength breaks equal-relevance ties without altering similarity; stability, salience, and persistence never enter relevance scoring, and the existing adaptive topic-block selection remains responsible for relative-score, score-gap, fact, topic, and token limits.
 
 Recall can be tag-aware. With no tag options, recall stays scoped to the current session. With `tags`, the default scope is `session-and-tags`, which filters current-session memories by tag. With `scope: "tagged"`, recall can search active memories across sessions that match the supplied tags. Tag matching supports `tagMode: "all"` with PostgreSQL `@>` semantics and `tagMode: "any"` with `&&` semantics. Tags are normalized by trimming, lowercasing, deduplicating, and sorting before storage or retrieval.
 
@@ -368,3 +370,17 @@ Optional cache failures do not fail retrieval. They produce a successful `Retrie
 | Studio | API and storage | unavailable health metadata | request lifecycle | none |
 
 Canonical reconciliation requires migration `008_memory_canonicalization.sql`, which adds canonical identity and reinforcement columns, the `mg_memory_evidence` table, and canonical lookup indexes. Deployments must run `npx memo-grafter migrate` before starting this version. Existing memory rows are preserved and receive canonical fields lazily when a later reconciliation inspects them. `doctor --ingestion` remains read-only; ingestion repairs remain explicit runtime calls through `reconcileSession()` or `reconcilePendingIngestion()`.
+
+## Structured Memory Quality
+
+Each memory carries `quality: { explicitness, sourceReliability, stability, salience }`. Explicitness measures direct evidence support; source reliability measures trustworthiness for the claim; stability measures expected validity over time; salience measures usefulness beyond the originating exchange. These are independent assessments, not calibrated probabilities and not query relevance.
+
+`src/utils/memoryQuality.ts` owns finite-number normalization, neutral per-field defaults (0.5), evidence-pair comparison, admission assessment, and the version-1 persistence formula above. Missing or malformed fields are tracked in `qualityDefaulted`; extraction emits `MEMORY_QUALITY_DEFAULTED`. The existing extraction call produces all four dimensions; embeddings remain content-only and require no migration re-embedding.
+
+Provenance validation runs before quality admission, which runs before each memory embedding. `qualityPolicy.mode` defaults to `observe`; `enforce` skips candidates below configurable explicitness/reliability thresholds (both provisionally 0.3). Defaulted fields cannot trigger rejection. Low stability alone never rejects an explicit task. A finite caller-supplied `sourceReliability` overrides the extracted reliability. Admission diagnostics report reasons and accepted/rejected/would-reject counts; production thresholds require application-specific evaluation.
+
+PostgreSQL stores four constrained numeric columns plus defaulted-field, origin, and update-time metadata on memory nodes and immutable evidence rows. Migration `009_memory_quality.sql` and the runtime migration share equivalent additive DDL. Existing confidence is retained only for audit; legacy rows receive unknown quality rather than fabricated dimensions. Fresh databases have no confidence column. Schema metadata exposes the same numeric checks.
+
+Reinforcement retains the stronger supporting explicitness/reliability pair, ranked by minimum evidence dimension, then reliability, then explicitness. It preserves stability and salience and only increments counts for newly inserted evidence. Canonical candidate lookup uses the existing fact-key index, with a legacy null-key fallback, instead of scanning every active memory for every candidate. Quality updates participate in the recall revision hash; cached candidates use the `candidates-v3-quality` namespace. Copy/graft paths and structural history preserve quality metadata.
+
+Both admission and lifecycle policies start in observation mode. `DecayScoringPass({ mode: "enforce" })` enables retirement after evaluation. No quality score resolves contradictory claims by itself. The single quality manual test, `tests/manual/memory-quality.ts`, lives outside accuracy and smoke suites. It ingests three complex questions with live LLM responses, then reads PostgreSQL after each exchange to report topics, memories, quality and provenance. Its session remains available in Studio; Markdown/JSON reports preserve snapshots and raw extraction outputs for semantic review.

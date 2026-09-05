@@ -17,7 +17,7 @@ class StableEmbedAdapter implements EmbedAdapter {
 
 function makeMemoryNode(
   overrides: Partial<ScoredMemoryNode> &
-    Pick<MemoryNode, "id" | "topicNodeId" | "subject" | "value" | "confidence">,
+    Pick<MemoryNode, "id" | "topicNodeId" | "subject" | "value" | "quality">,
 ): ScoredMemoryNode {
   return {
     id: overrides.id,
@@ -30,7 +30,7 @@ function makeMemoryNode(
     subject: overrides.subject,
     predicate: "uses",
     value: overrides.value,
-    confidence: overrides.confidence,
+    quality: overrides.quality,
     embedding: [0.1, 0.2, 0.3],
     sourceUrl: null,
     sourceTitle: null,
@@ -67,7 +67,7 @@ const highSimilarityLowConfidence = makeMemoryNode({
   topicNodeId: "topic-similarity",
   subject: "deployment fact",
   value: "matches the query very closely but has low extraction confidence",
-  confidence: 0.1,
+  quality: { explicitness: 0.1, sourceReliability: 0.1, stability: 0.1, salience: 0.1 },
   similarity: 0.95,
 });
 const lowerSimilarityHighConfidence = makeMemoryNode({
@@ -75,7 +75,7 @@ const lowerSimilarityHighConfidence = makeMemoryNode({
   topicNodeId: "topic-confidence",
   subject: "deployment fact",
   value: "is slightly less similar but much more reliable",
-  confidence: 1,
+  quality: { explicitness: 1, sourceReliability: 1, stability: 1, salience: 1 },
   similarity: 0.88,
 });
 const topics = new Map([
@@ -102,8 +102,8 @@ const defaultResult = await defaultRetriever.run(
   "confidence-ranking-session",
 );
 
-assert.equal(defaultResult.facts[0]?.id, "lower-similarity-high-confidence");
-assert.equal(defaultResult.nodes[0]?.id, "topic-confidence");
+assert.equal(defaultResult.facts[0]?.id, "high-similarity-low-confidence");
+assert.equal(defaultResult.nodes[0]?.id, highSimilarityLowConfidence.topicNodeId);
 assert.equal(
   Object.hasOwn(defaultResult.facts[0] ?? {}, "retrievalScore"),
   false,
@@ -113,10 +113,6 @@ const similarityOnlyRetriever = new RetrieverPipeline(store, new StableEmbedAdap
   limit: 2,
   minSimilarity: 0.5,
   tokenBudget: 1000,
-  scoring: {
-    similarityWeight: 1,
-    confidenceWeight: 0,
-  },
 });
 const similarityOnlyResult = await similarityOnlyRetriever.run(
   "deployment config reliability",
@@ -127,14 +123,14 @@ assert.equal(similarityOnlyResult.facts[0]?.id, "high-similarity-low-confidence"
 assert.equal(similarityOnlyResult.nodes[0]?.id, "topic-similarity");
 assert.equal(searchMemoriesCallCount, 2);
 
-console.log("confidence-weighted retrieval smoke passed");
+console.log("relevance-first retrieval smoke passed");
 console.log("default ranking:", defaultResult.facts.map((fact) => ({
   id: fact.id,
   similarity: fact.similarity,
-  confidence: fact.confidence,
+  quality: fact.quality,
 })));
 console.log("similarity-only ranking:", similarityOnlyResult.facts.map((fact) => ({
   id: fact.id,
   similarity: fact.similarity,
-  confidence: fact.confidence,
+  quality: fact.quality,
 })));

@@ -32,7 +32,7 @@ class MultiTopicLLMAdapter implements LLMAdapter {
         value: isHiring
           ? "backend hiring and graph-memory onboarding."
           : "document imports and editor autosave workflows.",
-        confidence: 0.95,
+        quality: { explicitness: 0.95, sourceReliability: 0.95, stability: 0.95, salience: 0.95 },
       }],
     });
   }

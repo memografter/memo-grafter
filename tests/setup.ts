@@ -58,7 +58,7 @@ export class FakeLLMAdapter implements LLMAdapter {
           subject: "Japan trip",
           predicate: "preference",
           value: "The user is planning Japan travel and cares about Japan guidance.",
-          confidence: 0.9,
+          quality: { explicitness: 0.9, sourceReliability: 0.9, stability: 0.9, salience: 0.9 },
           provenance: { speaker: "user", message_indexes: [1], extraction_method: "explicit" },
         }],
       });
@@ -75,7 +75,7 @@ export class FakeLLMAdapter implements LLMAdapter {
           subject: "Cover letter",
           predicate: "goal",
           value: "The user wants help writing a software cover letter.",
-          confidence: 0.9,
+          quality: { explicitness: 0.9, sourceReliability: 0.9, stability: 0.9, salience: 0.9 },
           provenance: { speaker: "user", message_indexes: [1], extraction_method: "explicit" },
         }],
       });
@@ -92,7 +92,7 @@ export class FakeLLMAdapter implements LLMAdapter {
           subject: "Butter chicken",
           predicate: "preference",
           value: "The user wants butter chicken substitutions.",
-          confidence: 0.9,
+          quality: { explicitness: 0.9, sourceReliability: 0.9, stability: 0.9, salience: 0.9 },
           provenance: { speaker: "user", message_indexes: [1], extraction_method: "explicit" },
         }],
       });
@@ -109,7 +109,7 @@ export class FakeLLMAdapter implements LLMAdapter {
           subject: "Refund policy",
           predicate: "window",
           value: "Customers can request a refund within 30 days.",
-          confidence: 0.95,
+          quality: { explicitness: 0.95, sourceReliability: 0.95, stability: 0.95, salience: 0.95 },
           provenance: { speaker: "user", message_indexes: [1], extraction_method: "explicit" },
         }],
       });

@@ -29,7 +29,7 @@ function makeMemoryNode(): ScoredMemoryNode {
     subject: "pipeline exports",
     predicate: "include",
     value: "RetrieverPipeline",
-    confidence: 0.98,
+    quality: { explicitness: 0.98, sourceReliability: 0.98, stability: 0.98, salience: 0.98 },
     embedding: [0.1, 0.2, 0.3],
     sourceUrl: null,
     sourceTitle: null,

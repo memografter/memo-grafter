@@ -70,7 +70,7 @@ function makeMemory(
     subject: "graph snapshot smoke",
     predicate: "captures",
     value: "all memory rows for a session",
-    confidence: 1,
+    quality: { explicitness: 1, sourceReliability: 1, stability: 1, salience: 1 },
     embedding: new Array<number>(1536).fill(0),
     sourceUrl: null,
     sourceTitle: null,

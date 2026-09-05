@@ -36,7 +36,7 @@ function candidate(index: number, similarity: number): Candidate {
     subject: relevant ? "production deployment region" : `unrelated preference ${index}`,
     predicate: relevant ? "uses" : "mentions",
     value: relevant ? "eu-west-1" : `distractor value ${index}`,
-    confidence: relevant ? 1 : 0.05,
+    quality: { explicitness: relevant ? 1 : 0.05, sourceReliability: relevant ? 1 : 0.05, stability: relevant ? 1 : 0.05, salience: relevant ? 1 : 0.05 },
     embedding: [0.1, 0.2, 0.3],
     sourceUrl: null,
     sourceTitle: null,
@@ -69,7 +69,7 @@ function topic(index: number): TopicNode {
 
 const candidates = Array.from({ length: 40 }, (_, offset) => {
   const index = offset + 1;
-  const similarity = index === 15 ? 0.58 : Number((0.73 - index * 0.01).toFixed(2));
+  const similarity = index === 15 ? 0.58 : Number((0.4 - index * 0.002).toFixed(2));
   return candidate(index, similarity);
 }).sort((a, b) => b.similarity - a.similarity);
 const topics = new Map(Array.from({ length: 40 }, (_, offset) => {
@@ -81,7 +81,7 @@ const legacyCandidates = candidates
   .filter((fact) => fact.similarity >= LEGACY_MIN_SIMILARITY)
   .slice(0, LEGACY_LIMIT);
 const legacySelected = legacyCandidates
-  .map((fact) => ({ fact, score: fact.similarity * 0.7 + fact.confidence * 0.3 }))
+  .map((fact) => ({ fact, score: fact.similarity * 0.7 + fact.quality.explicitness * 0.3 }))
   .sort((a, b) => b.score - a.score)
   .slice(0, LEGACY_LIMIT)
   .map(({ fact }) => fact);
@@ -112,7 +112,7 @@ const adaptivePrecision = adaptive.facts.length === 0 ? 0 : Number(adaptiveHit) 
 assert.equal(requestedCandidateLimit, 40, "adaptive retrieval should request the top 40 candidates");
 assert.equal(legacyHit, false, "legacy threshold/top-10 retrieval should miss the relevant fact");
 assert.equal(adaptiveHit, true, "adaptive retrieval should recover the relevant fact");
-assert.equal(adaptive.facts[0]?.id, RELEVANT_ID, "confidence-aware ranking should place the relevant fact first");
+assert.equal(adaptive.facts[0]?.id, RELEVANT_ID, "query similarity should place the relevant fact first");
 assert.ok(adaptivePrecision > legacyPrecision, "adaptive selection should improve precision in this regression case");
 assert.equal(adaptive.selection?.reason, "relative-score");
 

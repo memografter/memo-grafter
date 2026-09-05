@@ -29,6 +29,7 @@ export interface CrawlerPassResult {
   updateEdgesCreated?: number;
   decayScored?: number;
   nodesDecayed?: number;
+  wouldDecay?: number;
   minDecayScore?: number;
   maxDecayScore?: number;
   skippedAlreadyDecayed?: number;
@@ -43,7 +44,7 @@ export interface CrawlerMaintenanceStore {
   markMemoryNodesConflicting(memoryNodeIds: string[]): Promise<number>;
   markMemoryNodeSuperseded(memoryNodeId: string, supersededBy: string): Promise<boolean>;
   markMemoryNodeDecayed(memoryNodeId: string): Promise<boolean>;
-  updateMemoryNodeConfidence?(memoryNodeId: string, confidence: number): Promise<boolean>;
+  updateMemoryNodeQuality?(memoryNodeId: string, quality: MemoryNode["quality"]): Promise<boolean>;
   upsertMemoryEdge(edge: Pick<MemoryEdge, "sourceId" | "targetId" | "edgeType"> & {
     weight?: number;
   }): Promise<boolean>;

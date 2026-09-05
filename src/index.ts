@@ -134,3 +134,7 @@ export type {
   PlannedMemoryContext,
 } from "./invocation/types.js";
 export type { MigrationReport, MigrationReportItem, MigrationItemStatus } from "./schema/index.js";
+
+export type { MemoryQuality } from "./core/types.js";
+export { normalizeMemoryQuality, computePersistenceScore } from "./utils/memoryQuality.js";
+export type { QualityAdmissionPolicy } from "./utils/memoryQuality.js";

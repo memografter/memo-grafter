@@ -1,3 +1,4 @@
+import { normalizeMemoryQualityWithDefaults } from "../memoryQuality.js";
 import type {
   ExtractedMemory,
   MemoryType,
@@ -20,7 +21,7 @@ export function parseSegmentExtraction(raw: string, diagnostics?: MemoGrafterDia
       userIntent: stringValue(parsed.user_intent),
       outcome: stringValue(parsed.outcome),
       open: nullableStringValue(parsed.open),
-      memories: parseExtractedMemories(parsed.memories),
+      memories: parseExtractedMemories(parsed.memories, diagnostics),
     };
   } catch (error) {
     if (raw.trim().startsWith("{") || raw.trim().startsWith("[")) {
@@ -59,7 +60,7 @@ export function formatMemoryEmbeddingText(memory: ExtractedMemory): string {
   return `${memory.memoryType}: ${memory.subject} ${memory.predicate}: ${memory.value}`;
 }
 
-function parseExtractedMemories(value: unknown): ExtractedMemory[] {
+function parseExtractedMemories(value: unknown, diagnostics?: MemoGrafterDiagnostics): ExtractedMemory[] {
   if (!Array.isArray(value)) return [];
 
   const validTypes = new Set<MemoryType>(["fact", "insight", "question", "task", "reference"]);
@@ -83,12 +84,16 @@ function parseExtractedMemories(value: unknown): ExtractedMemory[] {
       continue;
     }
 
+    const normalized = normalizeMemoryQualityWithDefaults(record.quality);
+    if (normalized.defaulted.length) emitWarning(diagnostics, { code: "MEMORY_QUALITY_DEFAULTED", operation: "analyze", stage: "topic-extraction", context: { fields: normalized.defaulted } });
     memories.push({
       memoryType,
       subject,
       predicate,
       value: memoryValue,
-      confidence: numberValue(record.confidence, 1),
+      quality: normalized.quality,
+      qualityDefaulted: normalized.defaulted,
+      qualityOrigin: "extracted",
       provenance,
     });
   }
@@ -119,9 +124,4 @@ function nullableStringValue(value: unknown): string | null {
   const text = stringValue(value);
   if (!text || text.toLowerCase() === "none") return null;
   return text;
-}
-
-function numberValue(value: unknown, fallback: number): number {
-  const number = typeof value === "number" && Number.isFinite(value) ? value : fallback;
-  return Math.min(Math.max(number, 0), 1);
 }
