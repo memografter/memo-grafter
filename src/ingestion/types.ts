@@ -1,4 +1,4 @@
-import type { MemoryNodeInsert, Message, TopicEdge, TopicNode, TopicSegment } from "../core/types.js";
+import type { Episode, MemoryNodeInsert, Message, TopicEdge, TopicNode, TopicSegment } from "../core/types.js";
 import type { MemoGrafterErrorCode, MemoGrafterStage, MemoGrafterWarning } from "../diagnostics.js";
 
 export type IngestionKind = "messages" | "append" | "text";
@@ -25,6 +25,9 @@ export interface IngestionTransition {
 export interface PreparedIngestion {
   runId: string; sessionId: string; startIndex: number; endIndex: number; expectedCursor: number;
   segments: TopicSegment[]; nodes: TopicNode[]; memories: MemoryNodeInsert[]; requiredEdges: TopicEdge[]; warnings?: MemoGrafterWarning[];
+  episodes?: Episode[];
+  /** Existing stable topics whose aggregate metadata must be updated at commit. */
+  topicUpdates?: TopicNode[];
 }
 
 export interface AnalyzeDetailedInput {

@@ -1,7 +1,7 @@
 import { Redis } from "ioredis";
 import { GraftRelevancePipeline } from "../retrieval/GraftRelevancePipeline.js";
 import { GrafterPipeline } from "../retrieval/GrafterPipeline.js";
-import { RetrieverPipeline } from "../retrieval/RetrieverPipeline.js";
+import { formatEpisodeContext, RetrieverPipeline } from "../retrieval/RetrieverPipeline.js";
 import { IngestPipeline } from "../ingestion/conversation/IngestPipeline.js";
 import { IngestQueue } from "../ingestion/IngestQueue.js";
 import { PostgresGraphStore } from "../store/index.js";
@@ -67,6 +67,7 @@ export class MemoGrafter {
     const reentryDetection = config.drift?.reentryDetection;
     const reentryThreshold = config.drift?.reentryThreshold;
     const adaptiveSensitivity = config.drift?.adaptiveSensitivity;
+    const topicAssignment = config.drift?.topicAssignment;
     const topK = config.graph?.topK ?? 5;
     const hopDepth = config.graph?.hopDepth ?? 1;
     const bufferSize = config.inject?.bufferSize ?? 1;
@@ -106,6 +107,7 @@ export class MemoGrafter {
       ...(reentryDetection !== undefined ? { reentryDetection } : {}),
       ...(reentryThreshold !== undefined ? { reentryThreshold } : {}),
       ...(adaptiveSensitivity !== undefined ? { adaptiveSensitivity } : {}),
+      ...(topicAssignment !== undefined ? { topicAssignment } : {}),
       ...(config.diagnostics !== undefined ? { diagnostics: config.diagnostics } : {}),
       ...(config.ingestion?.requirements !== undefined ? { requirements: config.ingestion.requirements } : {}),
     });
@@ -300,7 +302,9 @@ export class MemoGrafter {
     const factsByTopic = new Map<string, typeof facts>();
     for (const fact of facts) factsByTopic.set(fact.topicNodeId, [...(factsByTopic.get(fact.topicNodeId) ?? []), fact]);
     const recalledBlocks = nodes.map((node) => formatFactBlock(factsByTopic.get(node.id) ?? [], node));
-    const recalledPrompt = facts.length > 0 ? buildFactRetrievalPrompt(recalledBlocks) : "";
+    const factPrompt = facts.length > 0 ? buildFactRetrievalPrompt(recalledBlocks) : "";
+    const episodePrompt = formatEpisodeContext(recalled.episodes ?? []);
+    const recalledPrompt = [factPrompt, episodePrompt].filter(Boolean).join("\n\n");
     const systemPrompt = [pinned.systemPrompt, recalledPrompt].filter(Boolean).join("\n\n");
     return {
       ...recalled,
@@ -309,7 +313,7 @@ export class MemoGrafter {
       pinnedNodes: pinned.nodes,
       pinnedContextTruncated: pinned.truncated,
       systemPrompt,
-      tokenCount: pinned.tokenCount + (facts.length > 0 ? countApproxTokens(recalledPrompt) : 0),
+      tokenCount: pinned.tokenCount + countApproxTokens(recalledPrompt),
       ...(recalled.tokenBudget !== undefined ? { tokenBudget: recalled.tokenBudget } : {}),
       ...(pinned.tokenBudget !== undefined ? { pinnedTokenBudget: pinned.tokenBudget } : {}),
     };

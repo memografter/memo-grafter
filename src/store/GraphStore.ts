@@ -1,5 +1,6 @@
 import type {
   GraftRegistryEntry,
+  Episode,
   MemoryEdge,
   MemoryDiff,
   MemoryHistoryOptions,
@@ -48,6 +49,11 @@ export interface GraphStore {
   /** Atomically persist a segment and its topic when supported by the store. */
   saveSegmentWithNode?(segment: TopicSegment, node: TopicNode): Promise<{ segment: TopicSegment; node: TopicNode }>;
   saveNode(node: TopicNode): Promise<void>;
+  /** Atomically persists an episode and creates or updates its assigned stable topic. */
+  saveEpisodeBundle?(segment: TopicSegment, episode: Episode, topic: TopicNode, createTopic: boolean): Promise<{ segment: TopicSegment; episode: Episode; topic: TopicNode }>;
+  getEpisodesBySession?(sessionId: string): Promise<Episode[]>;
+  getEpisodesByTopic?(topicId: string, limit?: number): Promise<Episode[]>;
+  searchEpisodeCandidates?(embedding: number[], sessionId: string, limit: number, options?: TagFilterOptions): Promise<Array<Episode & { similarity: number }>>;
   saveEdge(edge: TopicEdge): Promise<void>;
   getEdgesByType(sessionId: string, type: string): Promise<TopicEdge[]>;
   getEdgesBySession(sessionId: string): Promise<TopicEdge[]>;
@@ -86,7 +92,7 @@ export interface GraphStore {
   getMemoriesBySegment(segmentId: string): Promise<MemoryNode[]>;
   getMemoriesByTopic(topicNodeId: string): Promise<MemoryNode[]>;
   /** Batch-load active memories for topic candidates. Optional for custom-store compatibility. */
-  getActiveMemoriesByTopicIds?(topicNodeIds: string[], sessionIds?: string[]): Promise<MemoryNode[]>;
+  getActiveMemoriesByTopicIds?(topicNodeIds: string[], sessionIds?: string[], limitPerTopic?: number): Promise<MemoryNode[]>;
   searchMemories(
     embedding: number[],
     sessionId: string,

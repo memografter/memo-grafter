@@ -26,6 +26,38 @@ export interface TopicNode {
   pinned?: boolean;
   pinnedAt?: Date | null;
   createdAt: Date;
+  /** Number of episodes assigned to this stable topic. */
+  episodeCount?: number;
+  /** Number of episode embeddings represented by `embedding`. */
+  embeddingCount?: number;
+  firstActiveAt?: Date;
+  lastActiveAt?: Date;
+  lastEpisodeId?: string | null;
+  revision?: number;
+}
+
+export type TopicAssignmentMethod = "created" | "embedding" | "llm" | "backfill";
+
+/** A bounded account of what happened in one contiguous conversation segment. */
+export interface Episode {
+  id: string;
+  sessionId: string;
+  segmentId: string;
+  topicId: string;
+  summary: string;
+  intent: string;
+  outcome: string;
+  openQuestion: string | null;
+  embedding: number[];
+  messageRange: [number, number];
+  episodeOrder: number;
+  sourceType: MemorySourceType;
+  source?: string;
+  tags?: string[];
+  assignmentMethod: TopicAssignmentMethod;
+  assignmentSimilarity: number | null;
+  assignmentVersion: number;
+  createdAt: Date;
 }
 
 export interface TopicEdge {
@@ -123,6 +155,7 @@ export interface MemoryEvidence {
   quality: MemoryQuality;
   provenance?: MemoryProvenance | null;
   createdAt: Date;
+  episodeId?: string | null;
 }
 
 export interface MemoryEdge {
@@ -274,6 +307,7 @@ export interface GraphSnapshot {
   memories: MemoryNode[];
   snapshotMemories: GraphSnapshotMemory[];
   memoryEdges: MemoryEdge[];
+  episodes?: Episode[];
   capturedAt: string;
 }
 
@@ -291,6 +325,12 @@ export interface RetrieverConfig {
   /** @deprecated Similarity is no longer used as a candidate-generation cutoff. */
   minSimilarity?: number;
   tokenBudget?: number;
+  /** Maximum episode-history candidates considered. Default 40. */
+  episodeCandidateLimit?: number;
+  /** Maximum episode summaries returned. Default 3. */
+  episodeLimit?: number;
+  /** Approximate tokens reserved for episode history. Default 300. */
+  episodeTokenBudget?: number;
   tags?: string[];
   tagMode?: "all" | "any";
   scope?: "session" | "session-and-tags" | "tagged";
@@ -362,6 +402,8 @@ export interface IngestPipelineOptions extends IngestOptions {
 export interface RetrievalResult {
   facts: (MemoryNode & { similarity: number })[];
   nodes: TopicNode[];
+  /** Relevant interaction history, kept separate from durable facts. */
+  episodes?: Array<Episode & { similarity: number }>;
   systemPrompt: string;
   tokenCount: number;
   tokenBudget?: number;
@@ -371,9 +413,11 @@ export interface RetrievalResult {
     candidateCount: number;
     memoryCandidateCount: number;
     topicCandidateCount: number;
+    episodeCandidateCount?: number;
     rankedCount: number;
     selectedFactCount: number;
     selectedTopicCount: number;
+    selectedEpisodeCount?: number;
     topicOnlyMatchCount: number;
     reason: "exhausted" | "fact-limit" | "topic-limit" | "relative-score" | "score-gap" | "token-budget";
   };
@@ -455,6 +499,12 @@ export interface MemoGrafterDriftConfig {
   llmAmbiguityDetection?: boolean;
   reentryDetection?: boolean;
   reentryThreshold?: number;
+  topicAssignment?: {
+    /** Minimum episode-to-topic cosine similarity required for reuse. Default 0.82. */
+    reuseThreshold?: number;
+    /** Maximum existing topics considered per episode. Default 8. */
+    candidateLimit?: number;
+  };
 }
 
 export interface MemoGrafterGraphConfig {

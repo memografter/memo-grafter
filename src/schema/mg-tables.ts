@@ -1,7 +1,7 @@
 import { mgExtension, mgIndex, mgTable } from "./builders.js";
 
 export const memoGrafterMigrationTableName = "mg_migrations";
-export const memoGrafterCurrentMigrationVersion = 5;
+export const memoGrafterCurrentMigrationVersion = 6;
 
 export const memoGrafterExtensions = [
   mgExtension({
@@ -61,9 +61,40 @@ export const memoGrafterTables = [
       { name: "suppressed_at", type: "timestamptz", nullable: true },
       { name: "pinned", type: "boolean", default: "false" },
       { name: "pinned_at", type: "timestamptz", nullable: true },
+      { name: "episode_count", type: "int", default: "1" },
+      { name: "embedding_count", type: "int", default: "1" },
+      { name: "first_active_at", type: "timestamptz", nullable: true },
+      { name: "last_active_at", type: "timestamptz", nullable: true },
+      { name: "last_episode_id", type: "uuid", nullable: true },
+      { name: "revision", type: "int", default: "1" },
       { name: "created_at", type: "timestamptz", default: "now()" },
     ],
     constraints: ["UNIQUE (segment_id)"],
+  }),
+  mgTable({
+    name: "mg_episodes",
+    description: "Interaction-level history assigned to stable topic nodes.",
+    columns: [
+      { name: "id", type: "uuid", primaryKey: true, default: "gen_random_uuid()" },
+      { name: "session_id", type: "text" },
+      { name: "segment_id", type: "text", references: "mg_segments(id)", unique: true },
+      { name: "topic_id", type: "text", references: "mg_topic_nodes(id)" },
+      { name: "summary", type: "text" },
+      { name: "intent", type: "text" },
+      { name: "outcome", type: "text" },
+      { name: "open_question", type: "text", nullable: true },
+      { name: "embedding", type: "vector", nullable: true },
+      { name: "message_range", type: "int[]" },
+      { name: "episode_order", type: "int" },
+      { name: "source_type", type: "text", default: "conversation", check: "conversation|note|document|code" },
+      { name: "source", type: "text", nullable: true },
+      { name: "tags", type: "text[]", default: "'{}'" },
+      { name: "assignment_method", type: "text", default: "created", check: "created|embedding|llm|backfill" },
+      { name: "assignment_similarity", type: "float", nullable: true },
+      { name: "assignment_version", type: "int", default: "1" },
+      { name: "created_at", type: "timestamptz", default: "now()" },
+    ],
+    constraints: ["UNIQUE (session_id, episode_order)"],
   }),
   mgTable({
     name: "mg_topic_edges",
@@ -133,6 +164,7 @@ export const memoGrafterTables = [
       { name: "segment_id", type: "text", references: "mg_segments(id)" },
       { name: "topic_node_id", type: "text", references: "mg_topic_nodes(id)" },
       { name: "session_id", type: "text" },
+      { name: "episode_id", type: "uuid", nullable: true, references: "mg_episodes(id)" },
       { name: "original_subject", type: "text" },
       { name: "original_predicate", type: "text" },
       { name: "original_value", type: "text" },
@@ -257,6 +289,10 @@ export const memoGrafterIndexes = [
   mgIndex({ name: "idx_graft_registry_source_target_unique", table: "mg_graft_registry", description: "Prevents duplicate source-topic grafts into a target session." }),
   mgIndex({ name: "idx_graft_registry_source", table: "mg_graft_registry", description: "Source topic provenance lookup." }),
   mgIndex({ name: "mg_nodes_embedding_idx", table: "mg_topic_nodes", description: "Topic vector similarity search." }),
+  mgIndex({ name: "idx_topic_nodes_activity", table: "mg_topic_nodes", description: "Stable-topic activity lookup." }),
+  mgIndex({ name: "idx_episodes_session_order", table: "mg_episodes", description: "Episode chronology within a session." }),
+  mgIndex({ name: "idx_episodes_topic_activity", table: "mg_episodes", description: "Recent episodes for a topic." }),
+  mgIndex({ name: "idx_episodes_embedding_hnsw", table: "mg_episodes", description: "Episode vector similarity search." }),
   mgIndex({ name: "idx_memory_nodes_topic", table: "mg_memory_nodes", description: "Memory lookup by topic node." }),
   mgIndex({ name: "idx_memory_nodes_segment", table: "mg_memory_nodes", description: "Memory lookup by segment." }),
   mgIndex({ name: "idx_memory_nodes_session", table: "mg_memory_nodes", description: "Memory lookup by session." }),

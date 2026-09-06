@@ -102,6 +102,29 @@ describe("MemoGrafter external application APIs", () => {
     expect(result.query).toMatchObject({ status: "applied", contextualized: true, contextMessageCount: 2 });
   });
 
+  it("preserves episode history when combining recalled and pinned context", async () => {
+    const { memo } = createMemo();
+    (memo as unknown as { store: Partial<GraphStore> }).store = {
+      searchMemories: vi.fn(async () => []),
+      searchEpisodeCandidates: vi.fn(async () => [{
+        id: "00000000-0000-4000-8000-000000000001", sessionId: "session-1", segmentId: "segment-1",
+        topicId: "topic-1", summary: "The deployment choice was reviewed.", intent: "Choose deployment.",
+        outcome: "The first option was selected.", openQuestion: null, embedding: [0.1, 0.2],
+        messageRange: [2, 3] as [number, number], episodeOrder: 1, sourceType: "conversation" as const,
+        assignmentMethod: "embedding" as const, assignmentSimilarity: 0.95, assignmentVersion: 1,
+        createdAt: new Date("2026-01-01T00:00:00.000Z"), similarity: 0.95,
+      }]),
+      getPinnedTopics: vi.fn(async () => []),
+      getMemoriesBySession: vi.fn(async () => []),
+    };
+
+    const result = await memo.context({ sessionId: "session-1", query: "What did we choose?" });
+
+    expect(result.episodes).toHaveLength(1);
+    expect(result.systemPrompt).toContain("historical context, not durable facts");
+    expect(result.systemPrompt).toContain("deployment choice was reviewed");
+  });
+
   it("places multiple pinned topics before recall context in pin order", async () => {
     const { memo } = createMemo();
     const topics = ["Planning", "Deployment"].map((label, index) => ({

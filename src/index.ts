@@ -33,6 +33,7 @@ export type {
   DriftMode,
   DriftSensitivity,
   EmbedAdapter,
+  Episode,
   ExtractedMemory,
   FleetMemoryMode,
   GraftOrigin,
@@ -82,6 +83,7 @@ export type {
   SessionIngestState,
   TagFilterOptions,
   TopicEdge,
+  TopicAssignmentMethod,
   TopicNode,
   TopicSegment,
 } from "./core/types.js";

@@ -8,6 +8,7 @@ import {
 import type { GraphStore } from "../store/index.js";
 import type {
   EmbedAdapter,
+  Episode,
   MemoryNode,
   RetrievalResult,
   RetrieverConfig,
@@ -26,11 +27,13 @@ import { cosineSimilarity } from "../utils/drift/cosineSimilarity.js";
 type ScoredMemoryNode = MemoryNode & { similarity: number };
 type RankedMemoryNode = ScoredMemoryNode & { retrievalScore: number };
 type ScoredTopicNode = TopicNode & { similarity: number };
+type ScoredEpisode = Episode & { similarity: number };
 type SelectionReason = NonNullable<RetrievalResult["selection"]>["reason"];
 
 interface CandidateSearchResult {
   memories: ScoredMemoryNode[];
   topics: ScoredTopicNode[];
+  episodes: ScoredEpisode[];
 }
 
 interface RetrievedBlock {
@@ -65,6 +68,7 @@ export class RetrieverPipeline {
     const limit = this.config.limit ?? 10;
     const candidateLimit = Math.max(this.config.candidateLimit ?? DEFAULT_CANDIDATE_LIMIT, limit);
     const tokenBudget = this.config.tokenBudget ?? 1200;
+    const episodeTokenBudget = this.config.episodeTokenBudget ?? 300;
     const tags = normalizeTags(this.config.tags);
     const tagMode = this.config.tagMode ?? "all";
     const scope = this.config.scope === "tagged" && tags.length > 0
@@ -102,9 +106,13 @@ export class RetrieverPipeline {
         && (hasConfiguredSessionIds ? sessionIds.includes(topic.sessionId) : scope === "tagged" || topic.sessionId === sessionId)
         && this.matchesTags(topic.tags, tags, tagMode))
       .map((topic) => ({ ...topic, similarity: this.clampScore(topic.similarity) }))
+      .sort((a, b) => b.similarity - a.similarity || this.timestamp(b.lastActiveAt ?? b.createdAt) - this.timestamp(a.lastActiveAt ?? a.createdAt) || a.id.localeCompare(b.id));
+    const activeEpisodes = searched.episodes
+      .filter((episode) => hasConfiguredSessionIds ? sessionIds.includes(episode.sessionId) : scope === "tagged" || episode.sessionId === sessionId)
+      .filter((episode) => this.matchesTags(episode.tags, tags, tagMode))
       .sort((a, b) => b.similarity - a.similarity || this.timestamp(b.createdAt) - this.timestamp(a.createdAt) || a.id.localeCompare(b.id));
 
-    if (activeFacts.length === 0 && activeTopics.length === 0) {
+    if (activeFacts.length === 0 && activeTopics.length === 0 && activeEpisodes.length === 0) {
       return {
         facts: [],
         nodes: [],
@@ -112,7 +120,8 @@ export class RetrieverPipeline {
         tokenCount: 0,
         tokenBudget,
         query: contextualized.metadata,
-        selection: { candidateCount: searched.memories.length + searched.topics.length, memoryCandidateCount: searched.memories.length, topicCandidateCount: searched.topics.length, rankedCount: 0, selectedFactCount: 0, selectedTopicCount: 0, topicOnlyMatchCount: 0, reason: "exhausted" },
+        episodes: [],
+        selection: { candidateCount: searched.memories.length + searched.topics.length + searched.episodes.length, memoryCandidateCount: searched.memories.length, topicCandidateCount: searched.topics.length, episodeCandidateCount: searched.episodes.length, rankedCount: 0, selectedFactCount: 0, selectedTopicCount: 0, selectedEpisodeCount: 0, topicOnlyMatchCount: 0, reason: "exhausted" },
         ...(warnings.length ? { degraded: true, warnings } : {}),
       };
     }
@@ -157,20 +166,33 @@ export class RetrieverPipeline {
       tokenCount += blockTokenCount;
     }
 
+    const episodes: ScoredEpisode[] = [];
+    let episodeTokens = 0;
+    for (const episode of activeEpisodes.slice(0, this.config.episodeLimit ?? 3)) {
+      const cost = countApproxTokens(formatEpisode(episode));
+      if (episodeTokens + cost > episodeTokenBudget) continue;
+      episodes.push(episode);
+      episodeTokens += cost;
+    }
+    const episodeContext = formatEpisodeContext(episodes);
+
     return {
       facts,
       nodes,
-      systemPrompt: buildFactRetrievalPrompt(includedBlocks),
-      tokenCount,
+      episodes,
+      systemPrompt: [buildFactRetrievalPrompt(includedBlocks), episodeContext].filter(Boolean).join("\n\n"),
+      tokenCount: tokenCount + episodeTokens,
       tokenBudget,
       query: contextualized.metadata,
       selection: {
-        candidateCount: searched.memories.length + searched.topics.length,
+        candidateCount: searched.memories.length + searched.topics.length + searched.episodes.length,
         memoryCandidateCount: searched.memories.length,
         topicCandidateCount: searched.topics.length,
-        rankedCount: activeFacts.length + activeTopics.length,
+        episodeCandidateCount: searched.episodes.length,
+        rankedCount: activeFacts.length + activeTopics.length + activeEpisodes.length,
         selectedFactCount: facts.length,
         selectedTopicCount: nodes.length,
+        selectedEpisodeCount: episodes.length,
         topicOnlyMatchCount: includedMatches.filter((match) => match.matchedBy.length === 1 && match.matchedBy[0] === "topic").length,
         reason: selectionReason,
       },
@@ -221,7 +243,7 @@ export class RetrieverPipeline {
 
       if (hit) {
         const cached = JSON.parse(hit) as CandidateSearchResult;
-        return { ...cached, memories: cached.memories.map(memory => ({ ...memory, quality: normalizeMemoryQuality(memory.quality) })) };
+        return { ...cached, episodes: cached.episodes ?? [], memories: cached.memories.map(memory => ({ ...memory, quality: normalizeMemoryQuality(memory.quality) })) };
       }
 
     } catch (error: unknown) {
@@ -251,8 +273,11 @@ export class RetrieverPipeline {
     const topicSearch = this.store.searchTopicCandidates
       ? this.store.searchTopicCandidates(embedding, sessionId, limit, options)
       : Promise.resolve([]);
-    const [memories, topics] = await Promise.all([memorySearch, topicSearch]);
-    return { memories, topics };
+    const episodeSearch = this.store.searchEpisodeCandidates
+      ? this.store.searchEpisodeCandidates(embedding, sessionId, this.config.episodeCandidateLimit ?? limit, options).catch(() => [])
+      : Promise.resolve([]);
+    const [memories, topics, episodes] = await Promise.all([memorySearch, topicSearch, episodeSearch]);
+    return { memories, topics, episodes };
   }
 
   private hashEmbedding(embedding: number[]): string {
@@ -333,7 +358,7 @@ export class RetrieverPipeline {
     if (topicIds.length === 0) return [];
     const uniqueSessionIds = [...new Set(sessionIds)];
     if (this.store.getActiveMemoriesByTopicIds) {
-      return this.store.getActiveMemoriesByTopicIds(topicIds, uniqueSessionIds);
+      return this.store.getActiveMemoriesByTopicIds(topicIds, uniqueSessionIds, DEFAULT_TOPIC_MEMORY_LIMIT);
     }
     const memories = await Promise.all(topicIds.map((topicId) => this.store.getMemoriesByTopic(topicId)));
     return memories.flat();
@@ -415,4 +440,15 @@ export class RetrieverPipeline {
     if (configured.length === 0) return [sessionId];
     return [...new Set(configured)];
   }
+}
+
+function formatEpisode(episode: Episode): string {
+  const date = episode.createdAt instanceof Date ? episode.createdAt.toISOString() : String(episode.createdAt);
+  return `- [${date}; messages ${episode.messageRange[0]}-${episode.messageRange[1]}] ${episode.summary}`;
+}
+
+export function formatEpisodeContext(episodes: Episode[]): string {
+  return episodes.length > 0
+    ? `Relevant interaction history (historical context, not durable facts):\n${episodes.map(formatEpisode).join("\n")}`
+    : "";
 }
