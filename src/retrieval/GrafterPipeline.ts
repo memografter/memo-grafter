@@ -87,9 +87,13 @@ export class GrafterPipeline {
         edgeBySession.set(sessionId, memoryEdges);
       }
 
-      const start = Math.max(0, node.messageRange[0] - this.config.bufferSize);
-      const end = node.messageRange[1] + this.config.bufferSize;
-      const messages = await this.store.getBufferMessages(sessionId, start, end);
+      const episodes = await this.store.getEpisodesByTopic?.(node.id, 20) ?? [];
+      const ranges = episodes.length > 0 ? episodes.map((episode) => episode.messageRange) : [node.messageRange];
+      const messageGroups = await Promise.all(ranges.map(([rangeStart, rangeEnd]) => {
+        const buffer = episodes.length > 0 ? 0 : this.config.bufferSize;
+        return this.store.getBufferMessages(sessionId, Math.max(0, rangeStart - buffer), rangeEnd + buffer);
+      }));
+      const messages = messageGroups.flat();
       const topicMemories = sessionMemories.filter((memory) => memory.topicNodeId === node.id);
       blocks.push(formatMemoryNode(
         node,

@@ -11,6 +11,7 @@ import type {
 export interface StudioApiStore {
   getNodesBySession(sessionId: string, options?: { includeSuppressed?: boolean }): Promise<unknown[]>;
   getSegmentsBySession(sessionId: string): Promise<unknown[]>;
+  getEpisodesBySession?(sessionId: string): Promise<unknown[]>;
   getMemoriesBySession(sessionId: string): Promise<unknown[]>;
   getMessagesBySession(sessionId: string, startIndex?: number, endIndex?: number): Promise<unknown[]>;
   suppressTopic(nodeId: string): Promise<boolean>;
@@ -352,9 +353,10 @@ async function sendSessionGraph(
     return;
   }
 
-  const [nodes, segments, edges, memories, memoryEdges, graftRegistry] = await Promise.all([
+  const [nodes, segments, episodes, edges, memories, memoryEdges, graftRegistry] = await Promise.all([
     context.store.getNodesBySession(sessionId, { includeSuppressed: true }),
     context.store.getSegmentsBySession(sessionId),
+    context.store.getEpisodesBySession?.(sessionId) ?? Promise.resolve([]),
     context.repository.getTopicEdgesBySession(sessionId),
     context.store.getMemoriesBySession(sessionId),
     context.repository.getMemoryEdgesBySession(sessionId),
@@ -365,6 +367,7 @@ async function sendSessionGraph(
     sessionId,
     nodes,
     segments,
+    episodes,
     edges,
     memories,
     memoryEdges,
@@ -534,9 +537,10 @@ async function sendSessionTables(
     return;
   }
 
-  const [topics, segments, memories, messages, tables] = await Promise.all([
+  const [topics, segments, episodes, memories, messages, tables] = await Promise.all([
     context.store.getNodesBySession(sessionId, { includeSuppressed: true }),
     context.store.getSegmentsBySession(sessionId),
+    context.store.getEpisodesBySession?.(sessionId) ?? Promise.resolve([]),
     context.store.getMemoriesBySession(sessionId),
     context.store.getMessagesBySession(sessionId),
     context.repository.getTablesBySession(sessionId),
@@ -546,6 +550,7 @@ async function sendSessionTables(
     sessionId,
     topics,
     segments,
+    episodes,
     memories,
     messages,
     tables,

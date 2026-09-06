@@ -169,6 +169,9 @@ export class MemoGrafterAgent {
     const memories = await this.core.store.getMemoriesBySession(this.sessionId);
     const memoryEdges = await this.core.store.getMemoryEdgesBySession(this.sessionId);
     const registry = await this.core.store.getGraftRegistry(this.sessionId);
+    const episodes = this.core.store.getEpisodesBySession
+      ? await this.core.store.getEpisodesBySession(this.sessionId).catch(() => [])
+      : [];
     const registryByNodeId = new Map(registry.map((entry) => [entry.nodeId, entry]));
     const sortedNodes = [...nodes].sort(compareTopicNodesForSnapshot);
     const sortedEdges = [...edges].sort(compareTopicEdgesForSnapshot);
@@ -211,6 +214,7 @@ export class MemoGrafterAgent {
         },
       })),
       memoryEdges: sortedMemoryEdges,
+      episodes,
       capturedAt: new Date().toISOString(),
     };
   }

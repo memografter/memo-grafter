@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import postgres, { type Sql, type TransactionSql } from "postgres";
 import type { FleetAgentRecord, GraphStore } from "../GraphStore.js";
 import type { DatabaseQueryOperation, MemoGrafterDatabaseTelemetry } from "../../core/types.js";
-import type { GraftRegistryEntry, GraftTopicsRequest, GraftTopicsResult, MemoryDiff, MemoryDiffField, MemoryEdge, MemoryHistoryEntry, MemoryHistoryOptions, MemoryHistoryResult, MemoryHistoryStatus, MemoryNode, MemoryNodeInsert, Message, SessionIngestState, TagFilterOptions, TopicEdge, TopicNode, TopicSegment } from "../../core/types.js";
+import type { Episode, GraftRegistryEntry, GraftTopicsRequest, GraftTopicsResult, MemoryDiff, MemoryDiffField, MemoryEdge, MemoryHistoryEntry, MemoryHistoryOptions, MemoryHistoryResult, MemoryHistoryStatus, MemoryNode, MemoryNodeInsert, Message, SessionIngestState, TagFilterOptions, TopicEdge, TopicNode, TopicSegment } from "../../core/types.js";
 import {
   memoGrafterCurrentMigrationVersion,
   memoGrafterExtensionNames,
@@ -40,7 +40,21 @@ interface TopicNodeRow {
   suppressed_at: Date | null;
   pinned: boolean | null;
   pinned_at: Date | null;
+  episode_count: number | null;
+  embedding_count: number | null;
+  first_active_at: Date | null;
+  last_active_at: Date | null;
+  last_episode_id: string | null;
+  revision: number | null;
   created_at: Date;
+}
+
+interface EpisodeRow {
+  id: string; session_id: string; segment_id: string; topic_id: string; summary: string;
+  intent: string; outcome: string; open_question: string | null; embedding: string | number[] | null;
+  message_range: number[]; episode_order: number; source_type: Episode["sourceType"]; source: string | null;
+  tags: string[] | null; assignment_method: Episode["assignmentMethod"];
+  assignment_similarity: number | null; assignment_version: number; created_at: Date;
 }
 
 interface TopicSegmentRow {
@@ -291,6 +305,28 @@ export class PostgresGraphStore implements GraphStore {
       )
     `;
 
+    await this.sql`ALTER TABLE mg_topic_nodes ADD COLUMN IF NOT EXISTS episode_count INT NOT NULL DEFAULT 1`;
+    await this.sql`ALTER TABLE mg_topic_nodes ADD COLUMN IF NOT EXISTS embedding_count INT NOT NULL DEFAULT 1`;
+    await this.sql`ALTER TABLE mg_topic_nodes ADD COLUMN IF NOT EXISTS first_active_at TIMESTAMPTZ`;
+    await this.sql`ALTER TABLE mg_topic_nodes ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMPTZ`;
+    await this.sql`ALTER TABLE mg_topic_nodes ADD COLUMN IF NOT EXISTS last_episode_id UUID`;
+    await this.sql`ALTER TABLE mg_topic_nodes ADD COLUMN IF NOT EXISTS revision INT NOT NULL DEFAULT 1`;
+
+    await this.sql`
+      CREATE TABLE IF NOT EXISTS mg_episodes (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(), session_id TEXT NOT NULL,
+        segment_id TEXT NOT NULL UNIQUE REFERENCES mg_segments(id) ON DELETE CASCADE,
+        topic_id TEXT NOT NULL REFERENCES mg_topic_nodes(id) ON DELETE CASCADE,
+        summary TEXT NOT NULL, intent TEXT NOT NULL, outcome TEXT NOT NULL, open_question TEXT,
+        embedding vector(1536), message_range INT[] NOT NULL, episode_order INT NOT NULL,
+        source_type TEXT NOT NULL DEFAULT 'conversation' CHECK (source_type IN ('conversation','note','document','code')),
+        source TEXT, tags TEXT[] NOT NULL DEFAULT '{}',
+        assignment_method TEXT NOT NULL DEFAULT 'created' CHECK (assignment_method IN ('created','embedding','llm','backfill')),
+        assignment_similarity FLOAT, assignment_version INT NOT NULL DEFAULT 1,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE (session_id, episode_order)
+      )
+    `;
+
     await this.sql`
       CREATE TABLE IF NOT EXISTS mg_memory_nodes (
         id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -412,6 +448,14 @@ export class PostgresGraphStore implements GraphStore {
     `;
 
     await this.sql.unsafe(memoryQualityMigrationSql);
+    await this.sql`ALTER TABLE mg_memory_evidence ADD COLUMN IF NOT EXISTS episode_id UUID REFERENCES mg_episodes(id) ON DELETE SET NULL`;
+    await this.sql`INSERT INTO mg_episodes (session_id,segment_id,topic_id,summary,intent,outcome,embedding,message_range,episode_order,source_type,source,tags,assignment_method,created_at)
+      SELECT session_id,segment_id,id,COALESCE(summary,''),'','',embedding,message_range,topic_order,'conversation',source,tags,'backfill',created_at FROM mg_topic_nodes
+      ON CONFLICT (segment_id) DO NOTHING`;
+    await this.sql`UPDATE mg_topic_nodes topic SET episode_count=aggregate.episode_count,embedding_count=aggregate.episode_count,first_active_at=aggregate.first_active_at,last_active_at=aggregate.last_active_at,last_episode_id=aggregate.last_episode_id
+      FROM (SELECT topic_id,COUNT(*)::int AS episode_count,MIN(created_at) AS first_active_at,MAX(created_at) AS last_active_at,(ARRAY_AGG(id ORDER BY created_at DESC))[1] AS last_episode_id FROM mg_episodes GROUP BY topic_id) aggregate
+      WHERE aggregate.topic_id=topic.id`;
+    await this.sql`UPDATE mg_memory_evidence evidence SET episode_id=episode.id FROM mg_episodes episode WHERE evidence.segment_id=episode.segment_id AND evidence.episode_id IS NULL`;
 
     await this.sql`
       CREATE TABLE IF NOT EXISTS mg_fleets (
@@ -651,13 +695,17 @@ export class PostgresGraphStore implements GraphStore {
       const cursor = cursorRows[0]?.last_ingested_message_index ?? -1;
       if (cursor !== prepared.expectedCursor) throw this.ingestionInvariant(`Expected cursor ${prepared.expectedCursor}, found ${cursor}.`, prepared.sessionId, prepared.runId);
       for (const segment of prepared.segments) await transaction`INSERT INTO mg_segments (id,session_id,start_index,end_index,topic_order,drift_score,created_at) VALUES (${segment.id},${segment.sessionId},${segment.startIndex},${segment.endIndex},${segment.topicOrder},${segment.driftScore},${segment.createdAt}) ON CONFLICT (session_id,start_index,end_index) DO UPDATE SET topic_order=EXCLUDED.topic_order,drift_score=EXCLUDED.drift_score`;
-      for (const node of prepared.nodes) await transaction`INSERT INTO mg_topic_nodes (id,session_id,segment_id,label,summary,embedding,tags,source,message_range,topic_order,drift_score,agent_color,fleet_id,agent_id,created_at) VALUES (${node.id},${node.sessionId},${node.segmentId},${node.label},${node.summary},${toVectorLiteral(node.embedding)}::vector,${transaction.array(normalizeTags(node.tags))}::text[],${node.source ?? null},${node.messageRange},${node.topicOrder},${node.driftScore},${node.agentColor},${node.fleetId},${node.agentId},${node.createdAt}) ON CONFLICT (segment_id) DO UPDATE SET label=EXCLUDED.label,summary=EXCLUDED.summary,embedding=EXCLUDED.embedding,tags=EXCLUDED.tags,source=EXCLUDED.source,message_range=EXCLUDED.message_range,topic_order=EXCLUDED.topic_order,drift_score=EXCLUDED.drift_score`;
+      for (const node of prepared.nodes) await transaction`INSERT INTO mg_topic_nodes (id,session_id,segment_id,label,summary,embedding,tags,source,message_range,topic_order,drift_score,agent_color,fleet_id,agent_id,episode_count,embedding_count,first_active_at,last_active_at,last_episode_id,revision,created_at) VALUES (${node.id},${node.sessionId},${node.segmentId},${node.label},${node.summary},${toVectorLiteral(node.embedding)}::vector,${transaction.array(normalizeTags(node.tags))}::text[],${node.source ?? null},${node.messageRange},${node.topicOrder},${node.driftScore},${node.agentColor},${node.fleetId},${node.agentId},${node.episodeCount ?? 1},${node.embeddingCount ?? 1},${node.firstActiveAt ?? node.createdAt},${node.lastActiveAt ?? node.createdAt},${node.lastEpisodeId ?? null}::uuid,${node.revision ?? 1},${node.createdAt}) ON CONFLICT (segment_id) DO NOTHING`;
+      for (const episode of prepared.episodes ?? []) await transaction`INSERT INTO mg_episodes (id,session_id,segment_id,topic_id,summary,intent,outcome,open_question,embedding,message_range,episode_order,source_type,source,tags,assignment_method,assignment_similarity,assignment_version,created_at)
+        VALUES (${episode.id}::uuid,${episode.sessionId},${episode.segmentId},${episode.topicId},${episode.summary},${episode.intent},${episode.outcome},${episode.openQuestion},${toVectorLiteral(episode.embedding)}::vector,${episode.messageRange},${episode.episodeOrder},${episode.sourceType},${episode.source ?? null},${transaction.array(normalizeTags(episode.tags))}::text[],${episode.assignmentMethod},${episode.assignmentSimilarity},${episode.assignmentVersion},${episode.createdAt}) ON CONFLICT (segment_id) DO NOTHING`;
+      for (const node of prepared.topicUpdates ?? []) await transaction`UPDATE mg_topic_nodes SET summary=${node.summary},embedding=${toVectorLiteral(node.embedding)}::vector,tags=${transaction.array(normalizeTags(node.tags))}::text[],episode_count=${node.episodeCount ?? 1},embedding_count=${node.embeddingCount ?? 1},first_active_at=${node.firstActiveAt ?? node.createdAt},last_active_at=${node.lastActiveAt ?? node.createdAt},last_episode_id=${node.lastEpisodeId ?? null}::uuid,revision=${node.revision ?? 1} WHERE id=${node.id} AND session_id=${node.sessionId}`;
       await this.reconcileAndInsertMemories(transaction, prepared.memories);
       for (const edge of prepared.requiredEdges) await transaction`INSERT INTO mg_topic_edges (src_id,dst_id,weight,type) VALUES (${edge.srcId},${edge.dstId},${edge.weight},${edge.type}) ON CONFLICT (src_id,dst_id) DO UPDATE SET weight=EXCLUDED.weight,type=EXCLUDED.type`;
       await transaction`INSERT INTO mg_session_ingest_state (session_id,last_ingested_message_index,updated_at) VALUES (${prepared.sessionId},${prepared.endIndex},NOW()) ON CONFLICT (session_id) DO UPDATE SET last_ingested_message_index=EXCLUDED.last_ingested_message_index,updated_at=NOW()`;
       const completed = await transaction<IngestionRunRow[]>`UPDATE mg_ingestion_runs SET status='completed',completed_at=NOW(),lease_expires_at=NULL,updated_at=NOW() WHERE id=${prepared.runId} AND status='running' RETURNING *`;
       if (!completed[0]) throw this.ingestionInvariant("Ingestion run could not be completed.", prepared.sessionId, prepared.runId);
-      return { nodes: prepared.nodes, run: this.rowToIngestionRun(completed[0]) };
+      const committedNodes = [...new Map([...prepared.nodes, ...(prepared.topicUpdates ?? [])].map((node) => [node.id, node])).values()];
+      return { nodes: committedNodes, run: this.rowToIngestionRun(completed[0]) };
     });
   }
 
@@ -789,6 +837,54 @@ export class PostgresGraphStore implements GraphStore {
       if (!savedNodeRow) throw new Error("MemoGrafter topic upsert did not return a row.");
       return { segment: savedSegment, node: this.rowToNode(savedNodeRow) };
     });
+  }
+
+  async saveEpisodeBundle(
+    segment: TopicSegment,
+    episode: Episode,
+    topic: TopicNode,
+    createTopic: boolean,
+  ): Promise<{ segment: TopicSegment; episode: Episode; topic: TopicNode }> {
+    return this.sql.begin(async (transaction) => {
+      const segmentRows = await transaction<TopicSegmentRow[]>`INSERT INTO mg_segments (id,session_id,start_index,end_index,topic_order,drift_score,created_at)
+        VALUES (${segment.id},${segment.sessionId},${segment.startIndex},${segment.endIndex},${segment.topicOrder},${segment.driftScore},${segment.createdAt})
+        ON CONFLICT (session_id,start_index,end_index) DO UPDATE SET topic_order=EXCLUDED.topic_order,drift_score=EXCLUDED.drift_score RETURNING *`;
+      const savedSegment = this.rowToSegment(segmentRows[0]);
+      if (createTopic) {
+        await transaction`INSERT INTO mg_topic_nodes (id,session_id,segment_id,label,summary,embedding,tags,source,message_range,topic_order,drift_score,agent_color,fleet_id,agent_id,episode_count,embedding_count,first_active_at,last_active_at,last_episode_id,revision,created_at)
+          VALUES (${topic.id},${topic.sessionId},${savedSegment.id},${topic.label},${topic.summary},${toVectorLiteral(topic.embedding)}::vector,${transaction.array(normalizeTags(topic.tags))}::text[],${topic.source ?? null},${topic.messageRange},${topic.topicOrder},${topic.driftScore},${topic.agentColor},${topic.fleetId},${topic.agentId},${topic.episodeCount ?? 1},${topic.embeddingCount ?? 1},${topic.firstActiveAt ?? topic.createdAt},${topic.lastActiveAt ?? topic.createdAt},${episode.id}::uuid,${topic.revision ?? 1},${topic.createdAt})
+          ON CONFLICT (segment_id) DO NOTHING`;
+      }
+      const episodeRows = await transaction<EpisodeRow[]>`INSERT INTO mg_episodes (id,session_id,segment_id,topic_id,summary,intent,outcome,open_question,embedding,message_range,episode_order,source_type,source,tags,assignment_method,assignment_similarity,assignment_version,created_at)
+        VALUES (${episode.id}::uuid,${episode.sessionId},${savedSegment.id},${topic.id},${episode.summary},${episode.intent},${episode.outcome},${episode.openQuestion},${toVectorLiteral(episode.embedding)}::vector,${episode.messageRange},${episode.episodeOrder},${episode.sourceType},${episode.source ?? null},${transaction.array(normalizeTags(episode.tags))}::text[],${episode.assignmentMethod},${episode.assignmentSimilarity},${episode.assignmentVersion},${episode.createdAt})
+        ON CONFLICT (segment_id) DO NOTHING RETURNING *`;
+      if (!createTopic && episodeRows[0]) {
+        await transaction`UPDATE mg_topic_nodes SET summary=${topic.summary},embedding=${toVectorLiteral(topic.embedding)}::vector,tags=${transaction.array(normalizeTags(topic.tags))}::text[],episode_count=${topic.episodeCount ?? 1},embedding_count=${topic.embeddingCount ?? 1},first_active_at=${topic.firstActiveAt ?? topic.createdAt},last_active_at=${topic.lastActiveAt ?? episode.createdAt},last_episode_id=${episode.id}::uuid,revision=${topic.revision ?? 1} WHERE id=${topic.id} AND session_id=${topic.sessionId}`;
+      }
+      const savedEpisodeRows = episodeRows[0] ? episodeRows : await transaction<EpisodeRow[]>`SELECT * FROM mg_episodes WHERE segment_id=${savedSegment.id} LIMIT 1`;
+      const topicRows = await transaction<TopicNodeRow[]>`SELECT * FROM mg_topic_nodes WHERE id=${topic.id} LIMIT 1`;
+      if (!savedEpisodeRows[0] || !topicRows[0]) throw new Error("MemoGrafter episode persistence did not return its topic and episode.");
+      return { segment: savedSegment, episode: this.rowToEpisode(savedEpisodeRows[0]), topic: this.rowToNode(topicRows[0]) };
+    });
+  }
+
+  async getEpisodesBySession(sessionId: string): Promise<Episode[]> {
+    const rows = await this.sql<EpisodeRow[]>`SELECT * FROM mg_episodes WHERE session_id=${sessionId} ORDER BY episode_order ASC`;
+    return rows.map((row) => this.rowToEpisode(row));
+  }
+
+  async getEpisodesByTopic(topicId: string, limit = 20): Promise<Episode[]> {
+    const rows = await this.sql<EpisodeRow[]>`SELECT * FROM mg_episodes WHERE topic_id=${topicId} ORDER BY created_at DESC,id ASC LIMIT ${Math.max(0, limit)}`;
+    return rows.map((row) => this.rowToEpisode(row));
+  }
+
+  async searchEpisodeCandidates(embedding: number[], sessionId: string, limit: number, options: TagFilterOptions = {}): Promise<Array<Episode & { similarity: number }>> {
+    const rows = await this.sql<Array<EpisodeRow & { similarity: number }>>`SELECT episode.*, 1-(episode.embedding <=> ${toVectorLiteral(embedding)}::vector) AS similarity
+      FROM mg_episodes episode JOIN mg_topic_nodes topic ON topic.id=episode.topic_id
+      WHERE ${options.sessionIds?.length ? this.sql`episode.session_id=ANY(${this.sql.array(options.sessionIds)})` : this.sql`episode.session_id=${sessionId}`} AND topic.suppressed=FALSE
+        ${options.tags?.length ? options.tagMode === "any" ? this.sql`AND episode.tags && ${this.sql.array(normalizeTags(options.tags))}::text[]` : this.sql`AND episode.tags @> ${this.sql.array(normalizeTags(options.tags))}::text[]` : this.sql``}
+      ORDER BY episode.embedding <=> ${toVectorLiteral(embedding)}::vector,episode.created_at DESC LIMIT ${Math.max(0, limit)}`;
+    return rows.map((row) => ({ ...this.rowToEpisode(row), similarity: Number(row.similarity) }));
   }
 
   async saveNode(node: TopicNode): Promise<void> {
@@ -1091,8 +1187,8 @@ export class PostgresGraphStore implements GraphStore {
       `;
       if (existing.length) return false;
     }
-    const rows = await transaction<{ id: string }[]>`INSERT INTO mg_memory_evidence (memory_node_id,segment_id,topic_node_id,session_id,original_subject,original_predicate,original_value,quality_explicitness,quality_source_reliability,quality_stability,quality_salience,quality_defaulted,quality_origin,quality_updated_at,provenance_speaker,provenance_message_indexes,provenance_session_id,extraction_method)
-      VALUES (${memoryNodeId}::uuid,${node.segmentId},${node.topicNodeId},${node.sessionId},${node.subject},${node.predicate},${node.value},${node.quality.explicitness},${node.quality.sourceReliability},${node.quality.stability},${node.quality.salience},${transaction.array(node.qualityDefaulted ?? [])}::text[],${node.qualityOrigin ?? "provided"},NOW(),${node.provenance?.speaker ?? null},${node.provenance ? transaction.array(node.provenance.messageIndexes) : null}::int[],${node.provenance?.sessionId ?? null},${node.provenance?.extractionMethod ?? null})
+    const rows = await transaction<{ id: string }[]>`INSERT INTO mg_memory_evidence (memory_node_id,segment_id,topic_node_id,session_id,episode_id,original_subject,original_predicate,original_value,quality_explicitness,quality_source_reliability,quality_stability,quality_salience,quality_defaulted,quality_origin,quality_updated_at,provenance_speaker,provenance_message_indexes,provenance_session_id,extraction_method)
+      VALUES (${memoryNodeId}::uuid,${node.segmentId},${node.topicNodeId},${node.sessionId},(SELECT id FROM mg_episodes WHERE segment_id=${node.segmentId} LIMIT 1),${node.subject},${node.predicate},${node.value},${node.quality.explicitness},${node.quality.sourceReliability},${node.quality.stability},${node.quality.salience},${transaction.array(node.qualityDefaulted ?? [])}::text[],${node.qualityOrigin ?? "provided"},NOW(),${node.provenance?.speaker ?? null},${node.provenance ? transaction.array(node.provenance.messageIndexes) : null}::int[],${node.provenance?.sessionId ?? null},${node.provenance?.extractionMethod ?? null})
       ON CONFLICT (memory_node_id,segment_id,provenance_message_indexes) DO NOTHING RETURNING id`;
     return rows.length > 0;
   }
@@ -1123,19 +1219,19 @@ export class PostgresGraphStore implements GraphStore {
     return rows.map((row) => this.rowToMemoryNode(row));
   }
 
-  async getActiveMemoriesByTopicIds(topicNodeIds: string[], sessionIds?: string[]): Promise<MemoryNode[]> {
+  async getActiveMemoriesByTopicIds(topicNodeIds: string[], sessionIds?: string[], limitPerTopic = 3): Promise<MemoryNode[]> {
     if (topicNodeIds.length === 0 || sessionIds?.length === 0) return [];
     const rows = await this.sql<MemoryNodeRow[]>`
-      SELECT memory.*
-      FROM mg_memory_nodes memory
-      JOIN mg_topic_nodes topic ON topic.id = memory.topic_node_id
-      WHERE memory.topic_node_id = ANY(${this.sql.array(topicNodeIds)})
-        ${sessionIds ? this.sql`AND memory.session_id = ANY(${this.sql.array(sessionIds)})` : this.sql``}
-        AND memory.decayed = false
-        AND memory.superseded_by IS NULL
-        AND memory.forgotten = false
-        AND topic.suppressed = false
-      ORDER BY memory.created_at DESC, memory.id ASC
+      SELECT ranked.* FROM (
+        SELECT memory.*, ROW_NUMBER() OVER (PARTITION BY memory.topic_node_id ORDER BY memory.created_at DESC,memory.id ASC) AS topic_rank
+        FROM mg_memory_nodes memory
+        JOIN mg_topic_nodes topic ON topic.id = memory.topic_node_id
+        WHERE memory.topic_node_id = ANY(${this.sql.array(topicNodeIds)})
+          ${sessionIds ? this.sql`AND memory.session_id = ANY(${this.sql.array(sessionIds)})` : this.sql``}
+          AND memory.decayed = false AND memory.superseded_by IS NULL
+          AND memory.forgotten = false AND topic.suppressed = false
+      ) ranked WHERE ranked.topic_rank <= ${Math.max(1, limitPerTopic)}
+      ORDER BY ranked.created_at DESC,ranked.id ASC
     `;
     return rows.map((row) => this.rowToMemoryNode(row));
   }
@@ -1166,8 +1262,12 @@ export class PostgresGraphStore implements GraphStore {
 
   async getMemoryRevision(sessionIds: string[]): Promise<string> {
     if (sessionIds.length === 0) return "empty";
-    const rows = await this.sql<{ revision: string }[]>`SELECT md5(COALESCE(string_agg(id::text || ':' || COALESCE(superseded_by::text,'') || ':' || decayed::text || ':' || forgotten::text || ':' || has_conflict::text || ':' || reinforcement_count::text || ':' || quality_explicitness::text || ':' || quality_source_reliability::text || ':' || quality_stability::text || ':' || quality_salience::text || ':' || quality_defaulted::text || ':' || quality_origin || ':' || quality_updated_at::text, ',' ORDER BY id),'')) AS revision FROM mg_memory_nodes WHERE session_id=ANY(${this.sql.array(sessionIds)})`;
-    return rows[0]?.revision ?? "empty";
+    const [memories, episodes, topics] = await Promise.all([
+      this.sql<{ revision: string }[]>`SELECT md5(COALESCE(string_agg(id::text || ':' || COALESCE(superseded_by::text,'') || ':' || decayed::text || ':' || forgotten::text || ':' || has_conflict::text || ':' || reinforcement_count::text || ':' || quality_updated_at::text, ',' ORDER BY id),'')) AS revision FROM mg_memory_nodes WHERE session_id=ANY(${this.sql.array(sessionIds)})`,
+      this.sql<{ revision: string }[]>`SELECT md5(COALESCE(string_agg(id::text || ':' || topic_id || ':' || created_at::text, ',' ORDER BY id),'')) AS revision FROM mg_episodes WHERE session_id=ANY(${this.sql.array(sessionIds)})`,
+      this.sql<{ revision: string }[]>`SELECT md5(COALESCE(string_agg(id || ':' || revision::text || ':' || suppressed::text, ',' ORDER BY id),'')) AS revision FROM mg_topic_nodes WHERE session_id=ANY(${this.sql.array(sessionIds)})`,
+    ]);
+    return `${memories[0]?.revision ?? ""}:${episodes[0]?.revision ?? ""}:${topics[0]?.revision ?? ""}`;
   }
 
   async getMemoryHistoryById(
@@ -2611,6 +2711,10 @@ export class PostgresGraphStore implements GraphStore {
       USING ivfflat (embedding vector_cosine_ops)
       WITH (lists = 100)
     `;
+    await this.sql`CREATE INDEX IF NOT EXISTS idx_topic_nodes_activity ON mg_topic_nodes(session_id,last_active_at DESC)`;
+    await this.sql`CREATE INDEX IF NOT EXISTS idx_episodes_session_order ON mg_episodes(session_id,episode_order)`;
+    await this.sql`CREATE INDEX IF NOT EXISTS idx_episodes_topic_activity ON mg_episodes(topic_id,created_at DESC)`;
+    await this.sql`CREATE INDEX IF NOT EXISTS idx_episodes_embedding_hnsw ON mg_episodes USING hnsw (embedding vector_cosine_ops)`;
 
     await this.sql`
       CREATE INDEX IF NOT EXISTS idx_memory_nodes_topic
@@ -2754,7 +2858,25 @@ export class PostgresGraphStore implements GraphStore {
       suppressedAt: row.suppressed_at,
       pinned: row.pinned ?? false,
       pinnedAt: row.pinned_at,
+      episodeCount: row.episode_count ?? 1,
+      embeddingCount: row.embedding_count ?? 1,
+      firstActiveAt: row.first_active_at ?? row.created_at,
+      lastActiveAt: row.last_active_at ?? row.created_at,
+      lastEpisodeId: row.last_episode_id,
+      revision: row.revision ?? 1,
       createdAt: row.created_at,
+    };
+  }
+
+  private rowToEpisode(row: EpisodeRow): Episode {
+    const [start = 0, end = start] = row.message_range ?? [];
+    return {
+      id: row.id, sessionId: row.session_id, segmentId: row.segment_id, topicId: row.topic_id,
+      summary: row.summary, intent: row.intent, outcome: row.outcome, openQuestion: row.open_question,
+      embedding: parseVector(row.embedding), messageRange: [start, end], episodeOrder: row.episode_order,
+      sourceType: row.source_type, ...(row.source ? { source: row.source } : {}), tags: normalizeTags(row.tags ?? []),
+      assignmentMethod: row.assignment_method, assignmentSimilarity: row.assignment_similarity,
+      assignmentVersion: row.assignment_version, createdAt: row.created_at,
     };
   }
 

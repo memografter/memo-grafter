@@ -50,14 +50,15 @@ MemoGrafter is memory infrastructure, not an autonomous agent runtime. It does n
 ```text
 conversation or text
   -> topic segments
-  -> topic nodes
+  -> interaction episodes
+  -> stable topic nodes
   -> atomic memory facts
   -> lifecycle metadata
   -> recall or grafting
   -> prompt-ready context
 ```
 
-MemoGrafter stores conversation turns, tracks which messages have already been ingested, detects topic changes, extracts structured memory, links related memories, and retrieves or grafts context when needed.
+MemoGrafter stores conversation turns, tracks which messages have already been ingested, detects topic changes, and records each segment as an episode. Episodes describe what happened; durable memories separately capture facts worth retaining long-term. New episodes reuse a semantically matching topic when possible, so recurring subjects remain connected across later conversation segments.
 
 Memory is built incrementally. New chatbot turns append topic and memory nodes to the existing graph instead of clearing and rebuilding the session on every response. Grafted and externally enriched memory can survive later conversation turns. Use `clearSession()` explicitly when you want to reset an agent's local history and stored session memory.
 

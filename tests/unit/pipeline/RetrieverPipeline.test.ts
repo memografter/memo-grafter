@@ -3,7 +3,7 @@ import type { Redis } from "ioredis";
 import { buildFactRetrievalPrompt, formatFactBlock } from "../../../src/prompts/factRetrievalPrompt.js";
 import { RetrieverPipeline } from "../../../src/retrieval/RetrieverPipeline.js";
 import type { GraphStore } from "../../../src/store/index.js";
-import type { EmbedAdapter, MemoryNode, TopicNode } from "../../../src/core/types.js";
+import type { EmbedAdapter, Episode, MemoryNode, TopicNode } from "../../../src/core/types.js";
 import { countApproxTokens } from "../../../src/utils/text/tokenCount.js";
 
 type ScoredMemoryNode = MemoryNode & { similarity: number };
@@ -80,6 +80,7 @@ function makeStore(
     searchMemories: GraphStore["searchMemories"];
     searchMemoryCandidates: NonNullable<GraphStore["searchMemoryCandidates"]>;
     searchTopicCandidates: NonNullable<GraphStore["searchTopicCandidates"]>;
+    searchEpisodeCandidates: NonNullable<GraphStore["searchEpisodeCandidates"]>;
     getActiveMemoriesByTopicIds: NonNullable<GraphStore["getActiveMemoriesByTopicIds"]>;
     getMemoriesByTopic: GraphStore["getMemoriesByTopic"];
     getTopicNode: GraphStore["getTopicNode"];
@@ -93,6 +94,25 @@ function makeStore(
 }
 
 describe("RetrieverPipeline", () => {
+  it("returns episode history separately from durable facts", async () => {
+    const episode: Episode & { similarity: number } = {
+      id: "00000000-0000-4000-8000-000000000001", sessionId: "session-1", segmentId: "segment-1",
+      topicId: "topic-1", summary: "The user compared two deployment options and chose the first.",
+      intent: "Choose a deployment option.", outcome: "The first option was selected.", openQuestion: null,
+      embedding: [0.1, 0.2, 0.3], messageRange: [4, 5], episodeOrder: 2, sourceType: "conversation",
+      assignmentMethod: "embedding", assignmentSimilarity: 0.94, assignmentVersion: 1,
+      createdAt: new Date("2026-01-02T00:00:00.000Z"), similarity: 0.95,
+    };
+    const result = await new RetrieverPipeline(makeStore({
+      searchEpisodeCandidates: async () => [episode],
+    }), makeEmbedder(), {}).run("what did we choose", "session-1");
+
+    expect(result.facts).toEqual([]);
+    expect(result.episodes?.map((item) => item.id)).toEqual([episode.id]);
+    expect(result.systemPrompt).toContain("historical context, not durable facts");
+    expect(result.selection).toMatchObject({ episodeCandidateCount: 1, selectedEpisodeCount: 1 });
+  });
+
   it("searches memory and topic embeddings in parallel with the same query embedding", async () => {
     let releaseMemory!: () => void;
     const memoryPending = new Promise<void>((resolve) => { releaseMemory = resolve; });

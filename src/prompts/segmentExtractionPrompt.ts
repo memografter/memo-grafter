@@ -8,7 +8,7 @@ export function buildSegmentExtractionPrompt(messages: Message[], labelHint?: st
     .join("\n\n");
 
   return [
-    documentMode ? "Analyze this document segment and extract only durable, reusable knowledge for a future chatbot." : "Analyze this conversation segment and extract only durable user memory for a future chatbot.",
+    documentMode ? "Analyze this document segment: summarize what it contains, then separately extract durable, reusable knowledge." : "Analyze this conversation segment: summarize what happened in the interaction, then separately extract only durable user memory.",
     "",
     "Return a single valid JSON object and nothing else. Do not include markdown fences, backticks, a preamble, comments, or trailing text.",
     "",
@@ -50,6 +50,8 @@ export function buildSegmentExtractionPrompt(messages: Message[], labelHint?: st
     "- An explicit urgent task may have high explicitness/salience and low stability. An explicit claim from an unknown document may have high explicitness and sourceReliability 0.5.",
     "",
     "Rules:",
+    "- label, user_intent, outcome, and open describe this interaction episode and may include assistant actions with clear attribution.",
+    "- memories are a separate durability decision. Never copy an episode detail into memories unless it independently meets the durable-memory rules below.",
     "- Return only memories likely to remain useful beyond this exchange.",
     ...(documentMode ? [
       "- Attribute every memory to document with extraction_method document-extraction.",

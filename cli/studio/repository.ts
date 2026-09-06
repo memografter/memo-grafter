@@ -339,6 +339,7 @@ export class StudioRepository {
     const [
       messageBuffer,
       segments,
+      episodes,
       topicNodes,
       topicEdges,
       memoryNodes,
@@ -362,6 +363,13 @@ export class StudioRepository {
         ORDER BY topic_order ASC, start_index ASC, id ASC
       `,
       this.sql<Record<string, unknown>[]>`
+        SELECT id,session_id,segment_id,topic_id,summary,intent,outcome,open_question,
+          embedding::text AS embedding,message_range,episode_order,source_type,source,tags,
+          assignment_method,assignment_similarity,assignment_version,created_at
+        FROM mg_episodes WHERE session_id=${sessionId}
+        ORDER BY episode_order ASC,id ASC
+      `,
+      this.sql<Record<string, unknown>[]>`
         SELECT
           id,
           session_id,
@@ -381,6 +389,12 @@ export class StudioRepository {
           suppressed_at,
           pinned,
           pinned_at,
+          episode_count,
+          embedding_count,
+          first_active_at,
+          last_active_at,
+          last_episode_id,
+          revision,
           created_at
         FROM mg_topic_nodes
         WHERE session_id = ${sessionId}
@@ -470,6 +484,7 @@ export class StudioRepository {
     return [
       { name: "mg_message_buffer", rows: messageBuffer },
       { name: "mg_segments", rows: segments },
+      { name: "mg_episodes", rows: episodes },
       { name: "mg_topic_nodes", rows: topicNodes },
       { name: "mg_topic_edges", rows: topicEdges },
       { name: "mg_memory_nodes", rows: memoryNodes },
