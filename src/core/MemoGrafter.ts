@@ -39,6 +39,7 @@ import { MemoGrafterError, emitWarning, enrichMemoGrafterError, isMemoGrafterErr
 import type { AnalyzeDetailedInput, AnalyzeReceipt, IngestionRun, MemoGrafterCloseOptions, ReconciliationOptions, ReconciliationReport } from "../ingestion/types.js";
 import { MemoGrafterShutdownError } from "../ingestion/types.js";
 import { createOperationControl } from "../utils/operationControl.js";
+import { loadClusterMetadata } from "../retrieval/clusterMetadata.js";
 
 export class MemoGrafter {
   readonly llm: LLMAdapter;
@@ -108,6 +109,7 @@ export class MemoGrafter {
       ...(reentryThreshold !== undefined ? { reentryThreshold } : {}),
       ...(adaptiveSensitivity !== undefined ? { adaptiveSensitivity } : {}),
       ...(topicAssignment !== undefined ? { topicAssignment } : {}),
+      ...(config.clustering !== undefined ? { clustering: config.clustering } : {}),
       ...(config.diagnostics !== undefined ? { diagnostics: config.diagnostics } : {}),
       ...(config.ingestion?.requirements !== undefined ? { requirements: config.ingestion.requirements } : {}),
     });
@@ -306,8 +308,14 @@ export class MemoGrafter {
     const episodePrompt = formatEpisodeContext(recalled.episodes ?? []);
     const recalledPrompt = [factPrompt, episodePrompt].filter(Boolean).join("\n\n");
     const systemPrompt = [pinned.systemPrompt, recalledPrompt].filter(Boolean).join("\n\n");
+    const warnings = [...(recalled.warnings ?? [])];
+    const clusterMetadata = pinned.nodes.length ? await loadClusterMetadata(this.store,
+      [...pinned.nodes, ...nodes, ...(recalled.episodes ?? []).map(episode => ({ id: episode.topicId, sessionId: episode.sessionId }))],
+      warnings, this.diagnostics) : recalled.clusterMetadata;
     return {
       ...recalled,
+      ...(clusterMetadata ? { clusterMetadata } : {}),
+      ...(warnings.length ? { warnings, degraded: true } : {}),
       facts,
       nodes: [...pinned.nodes, ...nodes],
       pinnedNodes: pinned.nodes,
@@ -470,6 +478,7 @@ export class MemoGrafter {
   async ingestGraftedNodes(nodes: TopicNode[], targetSessionId: string): Promise<TopicNode[]> {
     const copiedNodes = await this.store.absorbNodes(nodes, targetSessionId);
     await this.store.rebuildEdgesForSession(targetSessionId);
+    await this.ingestPipeline.clusterAssigner.classify(copiedNodes);
     return copiedNodes;
   }
 
@@ -495,11 +504,21 @@ export class MemoGrafter {
   async absorbNodes(nodes: TopicNode[], targetSessionId: string): Promise<TopicNode[]> {
     const copiedNodes = await this.store.absorbNodes(nodes, targetSessionId);
     await this.store.rebuildEdgesForSession(targetSessionId);
+    await this.ingestPipeline.clusterAssigner.classify(copiedNodes);
     return copiedNodes;
   }
 
   createFleet(options: MemoGrafterFleetOptions = {}): MemoGrafterFleet {
     return new MemoGrafterFleet(this, options);
+  }
+
+  getTopicClusters(sessionId: string) {
+    return this.store.getTopicClusters?.(sessionId) ?? Promise.resolve([]);
+  }
+
+  /** Bounded, resumable classification of existing topics. Enable clustering first. */
+  backfillTopicClusters(sessionId: string, options: { afterId?: string; limit?: number } = {}) {
+    return this.ingestPipeline.clusterAssigner.backfill(sessionId, options);
   }
 
   async close(options: MemoGrafterCloseOptions = {}): Promise<void> {

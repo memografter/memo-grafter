@@ -94,6 +94,48 @@ function makeStore(
 }
 
 describe("RetrieverPipeline", () => {
+  it("hydrates cluster metadata after selection without changing scores, prompts, or budgets", async () => {
+    const topic = { ...makeTopicNode({ label: "Japan Trip", summary: "Planning Japan travel.", topicOrder: 1 }), embedding: [1, 0], similarity: 0.96 };
+    const search = vi.fn(async () => [structuredClone(topic)]);
+    const store = makeStore({ searchTopicCandidates: search, getMemoriesByTopic: async () => [] });
+    const cached = new Map<string, string>();
+    const cache = { get: async (key: string) => cached.get(key) ?? null,
+      setex: async (key: string, _ttl: number, value: string) => { cached.set(key, value); return "OK"; } } as unknown as Redis;
+    const pipeline = new RetrieverPipeline(store, makeEmbedder([1, 0]), { cache: {} }, cache);
+    const baseline = await pipeline.run("Japan", "session-1");
+    const metadata = { clusters: [{ id: "travel", sessionId: "session-1", label: "Travel", normalizedLabel: "travel",
+      description: "Travel planning", revision: 1, createdAt: new Date(), updatedAt: new Date() }],
+      topicClusters: [{ topicId: topic.id, clusterId: "travel" }] };
+    store.getTopicClusterMetadata = vi.fn(async () => metadata);
+    const classified = await pipeline.run("Japan", "session-1");
+    expect(classified.systemPrompt).toBe(baseline.systemPrompt);
+    expect(classified.tokenCount).toBe(baseline.tokenCount);
+    expect(classified.selection).toEqual(baseline.selection);
+    expect(classified.topicMatches).toEqual(baseline.topicMatches);
+    expect(classified.facts).toEqual(baseline.facts);
+    expect(classified.nodes.map(node => node.id)).toEqual(baseline.nodes.map(node => node.id));
+    expect(classified.clusterMetadata).toEqual(metadata);
+    expect(store.getTopicClusterMetadata).toHaveBeenCalledExactlyOnceWith([{ id: topic.id, sessionId: "session-1" }]);
+    metadata.clusters[0]!.label = "Journeys";
+    const renamed = await pipeline.run("Japan", "session-1");
+    expect(renamed.clusterMetadata?.clusters[0]?.label).toBe("Journeys");
+    expect(renamed.systemPrompt).toBe(baseline.systemPrompt);
+    metadata.clusters = [];
+    metadata.topicClusters = [];
+    expect((await pipeline.run("Japan", "session-1")).clusterMetadata?.clusters).toEqual([]);
+    expect(search).toHaveBeenCalledTimes(1);
+  });
+
+  it("still returns recall results when optional cluster hydration fails", async () => {
+    const topic = { ...makeTopicNode({ label: "Japan Trip", summary: "Japan travel.", topicOrder: 1 }), similarity: 0.95 };
+    const store = makeStore({ searchTopicCandidates: async () => [topic], getMemoriesByTopic: async () => [] });
+    store.getTopicClusterMetadata = async () => { throw new Error("metadata unavailable"); };
+    const result = await new RetrieverPipeline(store, makeEmbedder(), {}).run("Japan", "session-1");
+    expect(result.nodes).toHaveLength(1);
+    expect(result.degraded).toBe(true);
+    expect(result.warnings?.[0]?.context).toEqual({ reason: "cluster-metadata" });
+  });
+
   it("returns episode history separately from durable facts", async () => {
     const episode: Episode & { similarity: number } = {
       id: "00000000-0000-4000-8000-000000000001", sessionId: "session-1", segmentId: "segment-1",
@@ -103,14 +145,17 @@ describe("RetrieverPipeline", () => {
       assignmentMethod: "embedding", assignmentSimilarity: 0.94, assignmentVersion: 1,
       createdAt: new Date("2026-01-02T00:00:00.000Z"), similarity: 0.95,
     };
-    const result = await new RetrieverPipeline(makeStore({
+    const store = makeStore({
       searchEpisodeCandidates: async () => [episode],
-    }), makeEmbedder(), {}).run("what did we choose", "session-1");
+    });
+    store.getTopicClusterMetadata = vi.fn(async () => ({ clusters: [], topicClusters: [] }));
+    const result = await new RetrieverPipeline(store, makeEmbedder(), {}).run("what did we choose", "session-1");
 
     expect(result.facts).toEqual([]);
     expect(result.episodes?.map((item) => item.id)).toEqual([episode.id]);
     expect(result.systemPrompt).toContain("historical context, not durable facts");
     expect(result.selection).toMatchObject({ episodeCandidateCount: 1, selectedEpisodeCount: 1 });
+    expect(store.getTopicClusterMetadata).toHaveBeenCalledExactlyOnceWith([{ id: episode.topicId, sessionId: episode.sessionId }]);
   });
 
   it("searches memory and topic embeddings in parallel with the same query embedding", async () => {

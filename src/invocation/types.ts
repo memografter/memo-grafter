@@ -5,6 +5,7 @@ export type InvocationHistorySource = "process-local" | "database-backed-preview
 export type InvocationRetrievalStatus = "matched" | "no-match" | "failed" | "not-applicable";
 
 export interface InvocationRetrievalDetails {
+  clusterMetadata?: import("../core/types.js").TopicClusterMetadata;
   status: InvocationRetrievalStatus;
   strategy: "recall" | "fleet-combined";
   topics: TopicNode[];

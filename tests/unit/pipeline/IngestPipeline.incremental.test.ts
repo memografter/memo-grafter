@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { IngestPipeline } from "../../../src/ingestion/conversation/IngestPipeline.js";
 import type { GraphStore } from "../../../src/store/index.js";
 import type {
@@ -183,6 +183,29 @@ function createPipeline(store: IncrementalStore): IngestPipeline {
 }
 
 describe("IngestPipeline incremental ingest", () => {
+  it("runs optional classification after the cursor is committed and preserves ingestion on failure", async () => {
+    const store = new IncrementalStore();
+    let committedBeforeClassification = false;
+    Object.assign(store, {
+      getTopicNode: async (id: string) => store.nodes.find(node => node.id === id),
+      getTopicClusterCatalog: async () => {
+        committedBeforeClassification = store.ingestState?.lastIngestedMessageIndex === 1;
+        throw new Error("classifier storage unavailable");
+      },
+      commitTopicClusterDecision: vi.fn(),
+    });
+    const onWarning = vi.fn();
+    const pipeline = new IngestPipeline(store as unknown as GraphStore, new FakeLLMAdapter(), new FakeEmbedAdapter(), {
+      windowSize: 5, topK: 3, mode: "intent", minSegmentMessages: 1,
+      clustering: { enabled: true }, diagnostics: { onWarning },
+    });
+    const nodes = await pipeline.append([{ role: "user", content: "Japan trip planning." }, { role: "assistant", content: "Tokyo is an option." }], "s");
+    expect(nodes.length).toBeGreaterThan(0);
+    expect(committedBeforeClassification).toBe(true);
+    expect(store.ingestState?.lastIngestedMessageIndex).toBe(1);
+    expect(onWarning).toHaveBeenCalledWith(expect.objectContaining({ context: { sessionId: "s", reason: "topic-clustering" } }));
+  });
+
   it("serializes exchange appends and allocates consecutive message indexes", async () => {
     const store = new IncrementalStore();
     const pipeline = createPipeline(store);

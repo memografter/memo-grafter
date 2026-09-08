@@ -7,6 +7,7 @@ import type { GraphStore } from "../store/index.js";
 import { composePinnedTopicContext } from "../prompts/pinnedTopicPrompt.js";
 import { countApproxTokens } from "../utils/text/tokenCount.js";
 import { buildFactRetrievalPrompt, formatFactBlock } from "../prompts/factRetrievalPrompt.js";
+import { loadClusterMetadata } from "../retrieval/clusterMetadata.js";
 
 export interface StudioPreviewRequest { sessionId: string; query: string; profile?: InvocationProfile; fleetMemoryMode?: FleetMemoryMode; sharedSessionId?: string }
 export type StudioPreviewResult = InvocationPlan & { planId: string; expiresAt: string };
@@ -61,6 +62,14 @@ export class PipelineStudioPreviewService implements StudioPreviewService {
       buildMemoryContext: profile === "fleet-worker" ? () => this.buildFleetContext(request, history) : () => this.buildAgentContext(request.sessionId, query, history),
     });
     this.removeExpiredPlans();
+    const previousMetadata = plan.retrieval.clusterMetadata;
+    const clusterSessions = new Map(previousMetadata?.clusters.map(cluster => [cluster.id, cluster.sessionId]));
+    const clusterMetadata = await loadClusterMetadata(this.store, [...plan.retrieval.topics,
+      ...(previousMetadata?.topicClusters ?? []).flatMap(item => {
+        const sessionId = clusterSessions.get(item.clusterId);
+        return sessionId ? [{ id: item.topicId, sessionId }] : [];
+      })]);
+    if (clusterMetadata) plan.retrieval.clusterMetadata = clusterMetadata;
     const previousPlanId = this.activePlanBySession.get(request.sessionId);
     if (previousPlanId) this.plans.delete(previousPlanId);
     const planId = randomUUID();
@@ -128,6 +137,7 @@ export class PipelineStudioPreviewService implements StudioPreviewService {
         retrieval: {
           status: recallError ? "failed" : "matched", strategy: "recall",
           topics: [...pinnedTopics, ...recalledNodes],
+          ...(result.clusterMetadata ? { clusterMetadata: result.clusterMetadata } : {}),
           memories: [...pinnedMemories, ...recalledFacts], limit, minSimilarity, sessionIds: [sessionId],
           ...(result.query ? { query: result.query } : {}),
           ...(recallError ? { error: { message: recallError instanceof Error ? recallError.message : String(recallError), recoverable: true } } : {}),
@@ -164,6 +174,7 @@ export class PipelineStudioPreviewService implements StudioPreviewService {
       retrieval: {
         status: recallError ? "failed" : content ? "matched" : nodes.length ? "no-match" : "not-applicable", strategy: "fleet-combined",
         topics: [...injected.nodes, ...(recalled?.nodes ?? [])].filter((node, index, all) => all.findIndex((item) => item.id === node.id) === index),
+        ...(recalled?.clusterMetadata ? { clusterMetadata: recalled.clusterMetadata } : {}),
         memories: [...(injected.memories ?? []), ...(recalled?.facts ?? [])], limit: 6, minSimilarity: 0.55, sessionIds,
         ...(recalled?.query ? { query: recalled.query } : {}),
         ...(recallError ? { error: { message: recallError instanceof Error ? recallError.message : String(recallError), recoverable: true } } : {}),

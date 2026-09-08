@@ -215,6 +215,7 @@ export class MemoGrafterAgent {
       })),
       memoryEdges: sortedMemoryEdges,
       episodes,
+      ...(this.core.store.getTopicClusters ? { clusters: await this.core.store.getTopicClusters(this.sessionId) } : {}),
       capturedAt: new Date().toISOString(),
     };
   }
@@ -416,6 +417,7 @@ export class MemoGrafterAgent {
           status: recallError ? "failed" : "matched",
           strategy: "recall",
           topics: result.nodes,
+          ...(result.clusterMetadata ? { clusterMetadata: result.clusterMetadata } : {}),
           memories: result.facts,
           limit: options.limit,
           minSimilarity: options.minSimilarity,

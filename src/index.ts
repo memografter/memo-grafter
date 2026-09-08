@@ -15,6 +15,8 @@ export { OpenAIEmbedAdapter, OpenAILLMAdapter } from "./adapters/OpenAIAdapter.j
 export { GrafterPipeline } from "./retrieval/GrafterPipeline.js";
 export { GraftRelevancePipeline } from "./retrieval/GraftRelevancePipeline.js";
 export { IngestPipeline } from "./ingestion/conversation/IngestPipeline.js";
+export { TopicClusterAssigner } from "./ingestion/clustering/TopicClusterAssigner.js";
+export type { TopicCluster, TopicClusterAssignment, TopicClusterMetadata, TopicClusteringConfig } from "./core/types.js";
 export { RetrieverPipeline } from "./retrieval/RetrieverPipeline.js";
 export { RetrievalQueryContextualizer, selectRecentMessages } from "./retrieval/RetrievalQueryContextualizer.js";
 export { buildInvocationPlan } from "./invocation/InvocationPlanner.js";

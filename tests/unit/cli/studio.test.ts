@@ -4,6 +4,25 @@ import { handleStudioRequest, listenOnAvailablePort } from "../../../cli/command
 import { renderStudioHtml } from "../../../cli/studio/frontend.js";
 
 describe("memo-grafter studio", () => {
+  it("groups visible topics by persisted domains and keeps unassigned topics together", () => {
+    const html = renderStudioHtml({ databaseStatus: "connected", sessionCount: 1, studioUrl: "http://localhost:2891" });
+    const start = html.indexOf("function graphClusters(graph)");
+    const end = html.indexOf("function renderGraphCluster(", start);
+    const group = new Function("state", `${html.slice(start, end)}; return graphClusters;`)({ graph: {
+      clusters: [{ id: "travel", sessionId: "s", label: "Travel" }],
+    } });
+    const nodes = [
+      { id: "japan", raw: { clusterId: "travel", sessionId: "s" }, tags: ["holiday"] },
+      { id: "visa", raw: { clusterId: "travel", sessionId: "s" }, tags: ["admin"] },
+      { id: "other", raw: { clusterId: null, sessionId: "s" }, tags: ["holiday"] },
+    ];
+    const groups = group({ topicNodes: nodes, topicMemoryCounts: new Map([["japan", 2]]) });
+    expect(groups.map((item: { label: string; nodes: unknown[] }) => [item.label, item.nodes.length]))
+      .toEqual([["Travel", 2], ["Unclustered", 1]]);
+    expect(groups[0].memories).toBe(2);
+    expect(group({ topicNodes: [nodes[1]], topicMemoryCounts: new Map() })[0].nodes).toHaveLength(1);
+  });
+
   it("serves the bundled frontend and status endpoint", async () => {
     const state = {
       databaseStatus: "connected" as const,

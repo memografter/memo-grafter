@@ -23,6 +23,7 @@ import { emitWarning, type MemoGrafterDiagnostics, type MemoGrafterWarning } fro
 import { createOperationControl } from "../utils/operationControl.js";
 import { RetrievalQueryContextualizer } from "./RetrievalQueryContextualizer.js";
 import { cosineSimilarity } from "../utils/drift/cosineSimilarity.js";
+import { loadClusterMetadata } from "./clusterMetadata.js";
 
 type ScoredMemoryNode = MemoryNode & { similarity: number };
 type RankedMemoryNode = ScoredMemoryNode & { retrievalScore: number };
@@ -175,11 +176,18 @@ export class RetrieverPipeline {
       episodeTokens += cost;
     }
     const episodeContext = formatEpisodeContext(episodes);
+    const clusterMetadata = await loadClusterMetadata(this.store,
+      [...nodes, ...episodes.map(episode => ({ id: episode.topicId, sessionId: episode.sessionId }))], warnings, this.diagnostics);
+    if (clusterMetadata) {
+      const membership = new Map(clusterMetadata.topicClusters.map(item => [item.topicId, item.clusterId]));
+      for (const node of nodes) if (node.clusterId !== undefined || membership.has(node.id)) node.clusterId = membership.get(node.id) ?? null;
+    }
 
     return {
       facts,
       nodes,
       episodes,
+      ...(clusterMetadata ? { clusterMetadata } : {}),
       systemPrompt: [buildFactRetrievalPrompt(includedBlocks), episodeContext].filter(Boolean).join("\n\n"),
       tokenCount: tokenCount + episodeTokens,
       tokenBudget,

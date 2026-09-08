@@ -45,6 +45,7 @@ export interface StudioMemorySearchResult {
 }
 
 export interface StudioTopicSearchResult {
+  clusterId?: string | null;
   id: string;
   sessionId: string;
   segmentId: string;
@@ -98,6 +99,7 @@ interface TopicEdgeRow {
 }
 
 interface TopicSearchRow {
+  cluster_id?: string | null;
   id: string;
   session_id: string;
   segment_id: string;
@@ -349,6 +351,7 @@ export class StudioRepository {
       sessionMetadata,
       ingestState,
       graftRegistry,
+      topicClusters,
     ] = await Promise.all([
       this.sql<Record<string, unknown>[]>`
         SELECT session_id, message_index, role, content
@@ -389,6 +392,8 @@ export class StudioRepository {
           suppressed_at,
           pinned,
           pinned_at,
+          cluster_id,
+          cluster_assignment,
           episode_count,
           embedding_count,
           first_active_at,
@@ -479,6 +484,7 @@ export class StudioRepository {
         WHERE session_id = ${sessionId}
         ORDER BY grafted_at ASC, id ASC
       `,
+      this.sql<Record<string, unknown>[]>`SELECT id,session_id,label,normalized_label,description,revision,created_at,updated_at FROM mg_topic_clusters WHERE session_id=${sessionId} ORDER BY label,id`,
     ]);
 
     return [
@@ -486,6 +492,7 @@ export class StudioRepository {
       { name: "mg_segments", rows: segments },
       { name: "mg_episodes", rows: episodes },
       { name: "mg_topic_nodes", rows: topicNodes },
+      { name: "mg_topic_clusters", rows: topicClusters },
       { name: "mg_topic_edges", rows: topicEdges },
       { name: "mg_memory_nodes", rows: memoryNodes },
       { name: "mg_memory_edges", rows: memoryEdges },
@@ -548,6 +555,7 @@ export class StudioRepository {
 
   private rowToTopicSearchResult(row: TopicSearchRow): StudioTopicSearchResult {
     return {
+      clusterId: row.cluster_id ?? null,
       id: row.id,
       sessionId: row.session_id,
       segmentId: row.segment_id,

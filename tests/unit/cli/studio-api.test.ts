@@ -8,6 +8,7 @@ const memoryId = "11111111-1111-4111-8111-111111111111";
 describe("MemoGrafter Studio API", () => {
   it("serves session, graph, memory, and search data scoped to one session", async () => {
     const context = makeContext();
+    context.store.getTopicClusters = vi.fn(async () => [{ id: "travel", sessionId: "session-1", label: "Travel" }]);
     const server = createApiServer(context);
     const port = await listenOnAvailablePort(server, "127.0.0.1", 0);
 
@@ -36,6 +37,7 @@ describe("MemoGrafter Studio API", () => {
       expect(graph.body).toMatchObject({
         sessionId: "session-1",
         nodes: [{ id: "topic-1", sessionId: "session-1" }],
+        clusters: [{ id: "travel", sessionId: "session-1", label: "Travel" }],
         segments: [{ id: "segment-1", sessionId: "session-1" }],
         edges: [{ srcId: "topic-1", dstId: "topic-2" }],
         memories: [{ id: memoryId, sessionId: "session-1" }],
@@ -45,6 +47,7 @@ describe("MemoGrafter Studio API", () => {
       expect(tables.body).toMatchObject({
         sessionId: "session-1",
         topics: [{ id: "topic-1", sessionId: "session-1" }],
+        clusters: [{ id: "travel", sessionId: "session-1", label: "Travel" }],
         segments: [{ id: "segment-1", sessionId: "session-1" }],
         memories: [{ id: memoryId, sessionId: "session-1" }],
         messages: [{ role: "user", content: "hello" }],

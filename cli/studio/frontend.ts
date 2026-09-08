@@ -2304,6 +2304,7 @@ export function renderStudioHtml(state: StudioFrontendState): string {
             { name: "mg_message_buffer", rows: (source.messages || []).map((message, index) => normalizeDbRow({ message_index: index, role: message.role, content: message.content })) },
             { name: "mg_segments", rows: (source.segments || []).map((segment) => normalizeDbRow(toSnakeRow(segment))) },
             { name: "mg_topic_nodes", rows: (source.topics || []).map((topic) => normalizeDbRow(toSnakeRow(topic))) },
+            { name: "mg_topic_clusters", rows: (source.clusters || []).map((cluster) => normalizeDbRow(toSnakeRow(cluster))) },
             { name: "mg_memory_nodes", rows: (source.memories || []).map((memory) => normalizeDbRow(toSnakeRow(memory))) }
           ];
         }
@@ -2432,6 +2433,7 @@ export function renderStudioHtml(state: StudioFrontendState): string {
         function normalizeTables(raw) {
           const source = raw || {};
           return {
+            clusters: source.clusters || [],
             topics: (source.topics || []).map((topic) => ({
               id: topic.id,
               kind: "topic",
@@ -2834,7 +2836,8 @@ export function renderStudioHtml(state: StudioFrontendState): string {
           if (!result) return "0 items";
           const nodes = result.retrieval && Array.isArray(result.retrieval.topics) ? result.retrieval.topics.length : 0;
           const memories = result.retrieval && Array.isArray(result.retrieval.memories) ? result.retrieval.memories.length : 0;
-          return numberText(memories) + " memories · " + numberText(nodes) + " topics";
+          const domains = ((result.retrieval && result.retrieval.clusterMetadata && result.retrieval.clusterMetadata.clusters) || []).map((cluster) => cluster.label);
+          return numberText(memories) + " memories · " + numberText(nodes) + " topics" + (domains.length ? " · Domains: " + domains.join(", ") : "");
         }
 
         function handleGraphSearchKeydown(event) {
@@ -3297,7 +3300,7 @@ export function renderStudioHtml(state: StudioFrontendState): string {
           const clustersByKey = new Map();
           graph.topicNodes.forEach((node) => {
             const key = graphClusterKey(node);
-            const cluster = clustersByKey.get(key) || { key, label: key, nodes: [], memories: 0, suppressed: 0 };
+            const cluster = clustersByKey.get(key) || { key, label: topicClusterLabel(node.raw || node), nodes: [], memories: 0, suppressed: 0 };
             cluster.nodes.push(node);
             cluster.memories += graph.topicMemoryCounts.get(node.id) || 0;
             if (node.lifecycle === "suppressed") cluster.suppressed += 1;
@@ -3307,10 +3310,13 @@ export function renderStudioHtml(state: StudioFrontendState): string {
         }
 
         function graphClusterKey(node) {
-          const tags = Array.isArray(node.tags) ? node.tags.filter(Boolean) : [];
-          if (tags.length > 0) return tags[0];
-          if (node.lifecycle) return node.lifecycle;
-          return "Untagged";
+          return (node.raw || node).clusterId || "unclustered";
+        }
+
+        function topicClusterLabel(topic) {
+          const clusters = (state.graph && state.graph.clusters) || (state.tables && state.tables.clusters) || [];
+          const cluster = clusters.find((item) => item.id === topic.clusterId && item.sessionId === topic.sessionId);
+          return cluster ? cluster.label : "Unclustered";
         }
 
         function renderGraphCluster(cluster, graph) {
@@ -3688,6 +3694,7 @@ export function renderStudioHtml(state: StudioFrontendState): string {
 
           return detailSection("Topic", [
             detailTextRow("Label", raw.label || node.title),
+            detailTextRow("Domain", topicClusterLabel(raw)),
             detailTextRow("Summary", raw.summary || "None"),
             detailRow("Tags", tagsMarkup(node.tags)),
             detailTextRow("Lifecycle", lifecycle),

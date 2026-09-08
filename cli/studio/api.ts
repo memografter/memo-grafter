@@ -9,6 +9,7 @@ import type {
 } from "./repository.js";
 
 export interface StudioApiStore {
+  getTopicClusters?(sessionId: string): Promise<unknown[]>;
   getNodesBySession(sessionId: string, options?: { includeSuppressed?: boolean }): Promise<unknown[]>;
   getSegmentsBySession(sessionId: string): Promise<unknown[]>;
   getEpisodesBySession?(sessionId: string): Promise<unknown[]>;
@@ -353,7 +354,7 @@ async function sendSessionGraph(
     return;
   }
 
-  const [nodes, segments, episodes, edges, memories, memoryEdges, graftRegistry] = await Promise.all([
+  const [nodes, segments, episodes, edges, memories, memoryEdges, graftRegistry, clusters] = await Promise.all([
     context.store.getNodesBySession(sessionId, { includeSuppressed: true }),
     context.store.getSegmentsBySession(sessionId),
     context.store.getEpisodesBySession?.(sessionId) ?? Promise.resolve([]),
@@ -361,6 +362,7 @@ async function sendSessionGraph(
     context.store.getMemoriesBySession(sessionId),
     context.repository.getMemoryEdgesBySession(sessionId),
     context.store.getGraftRegistry(sessionId),
+    context.store.getTopicClusters?.(sessionId) ?? Promise.resolve([]),
   ]);
 
   sendJson(response, 200, {
@@ -372,6 +374,7 @@ async function sendSessionGraph(
     memories,
     memoryEdges,
     graftRegistry,
+    clusters,
     capturedAt: new Date().toISOString(),
   });
 }
@@ -537,13 +540,14 @@ async function sendSessionTables(
     return;
   }
 
-  const [topics, segments, episodes, memories, messages, tables] = await Promise.all([
+  const [topics, segments, episodes, memories, messages, tables, clusters] = await Promise.all([
     context.store.getNodesBySession(sessionId, { includeSuppressed: true }),
     context.store.getSegmentsBySession(sessionId),
     context.store.getEpisodesBySession?.(sessionId) ?? Promise.resolve([]),
     context.store.getMemoriesBySession(sessionId),
     context.store.getMessagesBySession(sessionId),
     context.repository.getTablesBySession(sessionId),
+    context.store.getTopicClusters?.(sessionId) ?? Promise.resolve([]),
   ]);
 
   sendJson(response, 200, {
@@ -554,6 +558,7 @@ async function sendSessionTables(
     memories,
     messages,
     tables,
+    clusters,
     capturedAt: new Date().toISOString(),
   });
 }

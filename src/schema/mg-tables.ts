@@ -1,7 +1,7 @@
 import { mgExtension, mgIndex, mgTable } from "./builders.js";
 
 export const memoGrafterMigrationTableName = "mg_migrations";
-export const memoGrafterCurrentMigrationVersion = 6;
+export const memoGrafterCurrentMigrationVersion = 7;
 
 export const memoGrafterExtensions = [
   mgExtension({
@@ -15,6 +15,21 @@ export const memoGrafterExtensions = [
 ] as const;
 
 export const memoGrafterTables = [
+  mgTable({
+    name: "mg_topic_clusters", description: "Optional session-scoped topic domains; no retrieval graph edges.",
+    columns: [
+      { name: "id", type: "uuid", primaryKey: true, default: "gen_random_uuid()" },
+      { name: "session_id", type: "text" },
+      { name: "label", type: "text" },
+      { name: "normalized_label", type: "text" },
+      { name: "aliases", type: "text[]", default: "'{}'" },
+      { name: "description", type: "text" },
+      { name: "embedding", type: "vector" },
+      { name: "revision", type: "int", default: "1" },
+      { name: "created_at", type: "timestamptz", default: "now()" },
+      { name: "updated_at", type: "timestamptz", default: "now()" },
+    ], constraints: ["UNIQUE (session_id, normalized_label)", "UNIQUE (session_id, id)"],
+  }),
   mgTable({
     name: "mg_message_buffer",
     description: "Ordered raw messages for each MemoGrafter session.",
@@ -61,6 +76,8 @@ export const memoGrafterTables = [
       { name: "suppressed_at", type: "timestamptz", nullable: true },
       { name: "pinned", type: "boolean", default: "false" },
       { name: "pinned_at", type: "timestamptz", nullable: true },
+      { name: "cluster_id", type: "uuid", nullable: true },
+      { name: "cluster_assignment", type: "jsonb", nullable: true },
       { name: "episode_count", type: "int", default: "1" },
       { name: "embedding_count", type: "int", default: "1" },
       { name: "first_active_at", type: "timestamptz", nullable: true },
@@ -69,7 +86,7 @@ export const memoGrafterTables = [
       { name: "revision", type: "int", default: "1" },
       { name: "created_at", type: "timestamptz", default: "now()" },
     ],
-    constraints: ["UNIQUE (segment_id)"],
+    constraints: ["UNIQUE (segment_id)", "FOREIGN KEY (session_id, cluster_id) REFERENCES mg_topic_clusters(session_id, id) ON DELETE SET NULL (cluster_id)"],
   }),
   mgTable({
     name: "mg_episodes",
@@ -270,6 +287,7 @@ export const memoGrafterTables = [
 ] as const;
 
 export const memoGrafterIndexes = [
+  mgIndex({ name: "idx_topic_nodes_cluster", table: "mg_topic_nodes", description: "Session-scoped cluster membership lookup." }),
   mgIndex({ name: "mg_message_buffer_session_idx", table: "mg_message_buffer", description: "Message lookup by session and index." }),
   mgIndex({ name: "mg_segments_session_idx", table: "mg_segments", description: "Segment lookup by session and topic order." }),
   mgIndex({ name: "mg_nodes_session_idx", table: "mg_topic_nodes", description: "Topic lookup by session and topic order." }),

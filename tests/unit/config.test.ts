@@ -36,11 +36,13 @@ describe("MemoGrafter project configuration", () => {
     const replacementLlm: LLMAdapter = { complete: vi.fn(async () => "replacement") };
     const resolved = await resolveMemoGrafterConfig(projectConfig({
       graph: { topK: 5, hopDepth: 2 },
+      clustering: { enabled: true, candidateLimit: 8 },
       cache: { connectionString: "redis://cache" },
       queue: { redisUrl: "redis://queue" },
     }), {
       llm: replacementLlm,
       graph: { topK: 10 },
+      clustering: { candidateLimit: 4 },
       inject: { recallLimit: 12 },
       cache: false,
       queue: false,
@@ -48,6 +50,7 @@ describe("MemoGrafter project configuration", () => {
 
     expect(resolved.llm).toBe(replacementLlm);
     expect(resolved.graph).toEqual({ topK: 10, hopDepth: 2 });
+    expect(resolved.clustering).toEqual({ enabled: true, candidateLimit: 4 });
     expect(resolved.inject).toEqual({ recallLimit: 12, recentWindowSize: 20 });
     expect(resolved.cache).toBeUndefined();
     expect(resolved.queue).toBeUndefined();
