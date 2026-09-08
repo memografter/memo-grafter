@@ -267,3 +267,22 @@ All notable changes to this project will be documented here.
 
 * Fixed ingestion recovery behavior when `analyze()` fails after partially persisting conversation data.
 * Fixed retry handling to safely resume incomplete ingestion rather than reprocessing already persisted work.
+
+
+## [0.5.2] - 2026-09-08
+
+### Added
+
+* Added contextualized retrieval queries using recent conversation context for more relevant memory recall.
+* Added topic-aware retrieval alongside memory-level retrieval.
+* Added canonical memory reconciliation and lifecycle tracking for evolving and superseded facts.
+* Added an episode layer with stable topic reuse across related conversation segments.
+* Added high-level topic clustering for organizing related topics into broader memory structures.
+
+### Changed
+
+* Redesigned retrieval candidate generation with adaptive selection to improve recall quality and reduce reliance on fixed similarity thresholds.
+* Replaced single memory confidence scores with structured quality scoring for more nuanced memory evaluation and ranking.
+* Improved durable memory extraction with ownership and provenance validation to better distinguish attributable, persistent facts.
+* Improved memory reconciliation so related facts can be canonicalized and tracked across their lifecycle.
+* Updated memory organization to reuse stable topics instead of creating unnecessary duplicate topic structures.
