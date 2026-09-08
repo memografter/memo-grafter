@@ -273,6 +273,8 @@ await memo.analyze({
 });
 ```
 
+For production workflows that need durable acceptance, idempotency, or queue status, prefer `analyzeDetailed({ ...exchange, idempotencyKey })`. Its receipt distinguishes `queued` from `processed`, identifies the ingestion run and immutable message range, and states whether messages and graph state are durable. Inspect a run with `getIngestionRun()`; use `reconcileSession()` or `reconcilePendingIngestion()` in read-only mode first, and opt into only the specific repair actions your application authorizes.
+
 `context()` embeds the query and runs the current graph retrieval path. It searches memory and topic embeddings in parallel, allowing either source to introduce a topic before the existing adaptive selection stage. Direct topic matches contribute their summary and a bounded set of active child memories. It returns `facts`, selected topic `nodes`, a ready-to-inject `systemPrompt`, source diagnostics in `topicMatches`, and token metadata. It always reads fresh graph state: even if recall caching is configured, this method does not read or populate Redis.
 
 `analyze()` accepts one completed, non-empty user-assistant exchange, atomically appends it after the session's durable message buffer, and runs the normal drift detection, extraction, embedding, and graph persistence pipeline. Calls are serialized per session within a process, and the built-in PostgreSQL store uses a session lock so concurrent application instances do not claim the same indexes. If analysis fails after the exchange is stored, the graph cursor remains unchanged and a later append retries the contiguous unprocessed backlog without overwriting messages. Optional tags are applied to the topic and memory rows created from the exchange. Call it only after a response completes; do not also ingest the same exchange through another API.
@@ -1860,7 +1862,7 @@ MemoGrafter is server-side only. Run it in Node.js.
 
 ## Production Notes
 
-MemoGrafter v0.1.0 is experimental. Treat it as a starting point for prototypes and evaluation, not a finished production memory platform.
+MemoGrafter v0.5.2 remains experimental. Treat it as a starting point for prototypes and evaluation, not a finished production memory platform.
 
 Practical notes:
 
@@ -1872,7 +1874,7 @@ Practical notes:
 - Use `forget()`, `forgetMany()`, `suppressTopic()`, and `restoreTopic()` for user-controlled memory lifecycle flows.
 - Use the optional recall cache for long sessions with repeated direct or invoke-time recall.
 - Store your own user/session mapping outside MemoGrafter.
-- Call `close()` during graceful shutdown.
+- Call `close()` during graceful shutdown. For durable queue deployments, use `close({ drain: true, timeoutMs })` and handle `MemoGrafterShutdownError` rather than assuming all accepted work finished.
 - Do not expose database credentials or OpenAI keys to browser code.
 - Run your own evaluation before trusting memory transfer behavior in user-facing flows.
 
@@ -1902,6 +1904,9 @@ Main exports:
 - `FleetAgentRecord`
 - `RetrievalResult`
 - `MemoGrafterOperationOptions`
+- `AnalyzeDetailedInput`, `AnalyzeReceipt`, `IngestionRun`, `IngestionEvent`, and reconciliation/shutdown types
+- `Episode`, `TopicCluster`, `TopicClusterAssignment`, and `TopicClusterMetadata`
+- `MemoryQuality`, `MemoryProvenance`, and `MemoryEvidence`
 - `RetrieverConfig`
 - `TagFilterOptions`
 - `IngestOptions`

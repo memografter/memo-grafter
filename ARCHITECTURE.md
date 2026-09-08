@@ -48,6 +48,8 @@ Applications that already own their LLM call use the split external-integration 
 
 The node-count guard avoids an embed and memory search on the first turn or while async ingestion has not produced active graph content. This keeps the foreground chatbot turn simple while memory construction happens after the response. Read and lifecycle calls wait for the agent's local pending-ingest chain. Without queue mode that includes pipeline completion; with BullMQ it covers submission only, and durable graph visibility still depends on worker completion.
 
+The memory hierarchy is now `session -> topic cluster (optional organization) -> stable topic -> episode -> atomic memory/evidence`. Clusters are navigation metadata and never alter retrieval ranking or prompts. Stable topics accumulate related episodes; episodes preserve the bounded event summary and source range that would otherwise be lost when a topic is reused. Atomic memories remain the durable factual layer and are reconciled by canonical identity with immutable evidence records.
+
 ## Ingestion Flow
 
 `IngestPipeline` is responsible for turning a session message history into graph state.
