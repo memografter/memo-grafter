@@ -321,3 +321,6 @@ MemoGrafter is server-side only. Do not run it in browser code.
 ## License
 
 MIT
+### Optional topic domains
+
+Set `clustering: { enabled: true }` to organize stable topics into session-scoped domains such as **Travel → Japan Trip, Visa Planning, Flights**. Classification runs after ingestion commits and remains disabled by default. Domains appear in Studio and retrieval metadata without changing retrieval scores, traversal, or prompts. See the [topic domain guide](USER_GUIDE.md#optional-topic-domains) for migration, backfill, limits, and evaluation.

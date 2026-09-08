@@ -12,6 +12,29 @@ function run(status: IngestionRun["status"] = "accepted"): IngestionRun {
 }
 
 describe("MemoGrafter durable ingestion API", () => {
+  it("keeps a durable run committed when post-commit clustering fails", async () => {
+    const node = { id: "topic", sessionId: "session-1", label: "Japan Trip", summary: "Japan travel", revision: 1 } as TopicNode;
+    const events: string[] = [];
+    const store = {
+      transitionIngestionRun: vi.fn(async ({ to }: { to: IngestionRun["status"] }) => run(to)),
+      commitPreparedIngestion: vi.fn(async () => { events.push("committed"); return { nodes: [node], run: run("completed") }; }),
+      getSimilarNodes: async () => [], buildMemoryEdges: async () => undefined,
+      getTopicNode: async () => node,
+      getTopicClusterCatalog: async () => { events.push("clustering"); throw new Error("optional catalog failure"); },
+      commitTopicClusterDecision: vi.fn(),
+    } as unknown as GraphStore;
+    const pipeline = new IngestPipeline(store, { complete: vi.fn() }, { embed: vi.fn() }, {
+      windowSize: 2, topK: 2, mode: "intent", minSegmentMessages: 1, clustering: { enabled: true },
+    });
+    (pipeline as unknown as { prepareIngestion: () => Promise<unknown> }).prepareIngestion = async () => ({ warnings: [] });
+    const result = await pipeline.processIngestionRun(run());
+    expect(events).toEqual(["committed", "clustering"]);
+    expect(result.run.status).toBe("completed_with_warnings");
+    expect(result.nodes).toEqual([node]);
+    expect(result.warnings).toHaveLength(1);
+    expect(store.transitionIngestionRun).not.toHaveBeenCalledWith(expect.objectContaining({ to: "retry_pending" }));
+  });
+
   it("returns a detailed processed receipt while legacy analyze still returns nodes", async () => {
     const memo = new MemoGrafter({ db: { connectionString: "postgres://unused" }, llm: { complete: vi.fn() }, embedder: { embed: vi.fn() } });
     const node = { id: "node-1", messageRange: [0, 1] } as TopicNode;

@@ -16,6 +16,7 @@ import type {
 type SnapshotCore = {
   getTopics(sessionId: string): Promise<{ nodes: TopicNode[]; segments: TopicSegment[] }>;
   store: {
+    getTopicClusters(sessionId: string): Promise<[]>;
     getEdgesBySession(sessionId: string): Promise<TopicEdge[]>;
     getMemoriesBySession(sessionId: string): Promise<MemoryNode[]>;
     getMemoryEdgesBySession(sessionId: string): Promise<MemoryEdge[]>;
@@ -37,12 +38,14 @@ class FakeEmbedAdapter implements EmbedAdapter {
 }
 
 function createAgent(overrides: Partial<MemoGrafterConfig> = {}): MemoGrafterAgent {
-  return new MemoGrafterAgent({
+  const agent = new MemoGrafterAgent({
     db: { connectionString: "postgres://user:pass@localhost:5432/memografter_test" },
     llm: new FakeLLMAdapter(),
     embedder: new FakeEmbedAdapter(),
     ...overrides,
   });
+  internals(agent).core.store.getTopicClusters = async () => [];
+  return agent;
 }
 
 function internals(agent: MemoGrafterAgent): {

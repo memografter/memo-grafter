@@ -6,7 +6,49 @@ export interface Message {
 export type DriftMode = "window" | "intent";
 export type DriftSensitivity = "low" | "medium" | "high";
 
+/** Session-owned classification metadata; never a retrieval graph node. */
+export interface TopicCluster {
+  id: string;
+  sessionId: string;
+  label: string;
+  normalizedLabel: string;
+  /** Normalized equivalent domain labels confirmed by the classifier. */
+  aliases?: string[];
+  description: string;
+  embedding: number[];
+  revision: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface TopicClusterAssignment {
+  method: "created" | "verified" | "unassigned" | "failed";
+  similarity: number | null;
+  classifierVersion: number;
+  topicRevision: number;
+  evaluatedAt: string;
+  retryAfter: string | null;
+}
+
+export interface TopicClusterMetadata {
+  clusters: Array<Omit<TopicCluster, "embedding">>;
+  topicClusters: Array<{ topicId: string; clusterId: string }>;
+}
+
+export interface TopicClusteringConfig {
+  /** Disabled by default. Does not affect retrieval selection or prompts. */
+  enabled?: boolean;
+  candidateLimit?: number;
+  /** Minimum classifier confidence; conservative provisional default: 0.9. */
+  minConfidence?: number;
+  timeoutMs?: number;
+  retryAfterMs?: number;
+  maxTopicsPerRun?: number;
+}
+
 export interface TopicNode {
+  clusterId?: string | null;
+  clusterAssignment?: TopicClusterAssignment | null;
   id: string;
   sessionId: string;
   segmentId: string;
@@ -300,6 +342,7 @@ export interface GraphSnapshotMemory {
 }
 
 export interface GraphSnapshot {
+  clusters?: Array<Omit<TopicCluster, "embedding">>;
   sessionId: string;
   nodes: TopicNode[];
   snapshotNodes: GraphSnapshotNode[];
@@ -400,6 +443,8 @@ export interface IngestPipelineOptions extends IngestOptions {
 }
 
 export interface RetrievalResult {
+  /** Hydrated after selection; never injected into the prompt. */
+  clusterMetadata?: TopicClusterMetadata;
   facts: (MemoryNode & { similarity: number })[];
   nodes: TopicNode[];
   /** Relevant interaction history, kept separate from durable facts. */
@@ -583,6 +628,7 @@ export interface MemoGrafterCacheConfig {
 }
 
 export interface MemoGrafterConfig {
+  clustering?: TopicClusteringConfig;
   db: MemoGrafterDatabaseConfig;
   llm: LLMAdapter;
   embedder: EmbedAdapter;

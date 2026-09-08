@@ -2007,3 +2007,49 @@ npm run manual:memory-quality
 This test reads `DATABASE_URL` and `OPENAI_API_KEY` from `.env`, runs the normal additive migration, and uses a unique session retained for Studio inspection. It asks three detailed questions: a Japan work trip, a schedule correction with tentative weekend plans, and a billing-service design question with permanent constraints and a provisional Redis experiment. Assistant responses, extraction and embeddings use live OpenAI adapters; the test supplies no memory scores. `MEMORY_QUALITY_MODEL` optionally overrides the default `gpt-4o-mini` model.
 
 After each question/response pair, the test calls `analyzeDetailed()` and reads back the actual topics and memories. Console tables and Markdown/JSON reports under `tests/manual/reports/memory-quality/` show topic summaries, new/updated memories, all four scores, defaults, provenance, and conflict/supersession state. Assertions check graph creation, bounded complete quality scores and user-message provenance. Review the report's semantic checklist to assess whether uncertainty, temporary plans and enduring constraints were represented correctly; exact scores and counts vary between live runs. Reports include the transcript and raw extraction responses and are git-ignored.
+## Optional topic domains
+
+Topic clusters organize stable topics into session-owned domains, such as **Travel → Japan Trip, Visa Planning, Flights**. Enable them explicitly in your existing configuration:
+
+```ts
+clustering: {
+  enabled: true,       // default: false
+  candidateLimit: 8,
+  minConfidence: 0.9,
+  timeoutMs: 10_000,   // total provider deadline per classification attempt
+  retryAfterMs: 86_400_000,
+  maxTopicsPerRun: 8,
+}
+```
+
+Run `npx memo-grafter migrate` before using the upgraded SDK. The additive migration leaves existing topics unassigned and requires PostgreSQL 15+ (the supplied compose file uses PostgreSQL 16).
+
+Classification happens after ingestion commits. It uses a separate domain description and embedding, verifies existing candidate domains before creating a new one, and remembers verified equivalent labels. Ambiguous topics remain unassigned. Existing assignments are preserved; a cooldown and evaluated topic revision prevent repeated work on unchanged ambiguous topics. Failed classifications become eligible after the cooldown. Failures produce diagnostics and do not undo ingested memories. Up to eight eligible topics are classified per run; one catalog-conflict retry is allowed. Provider work is bounded, but adds post-commit ingestion latency. These confidence defaults are conservative starting values, not calibrated accuracy guarantees.
+
+To classify existing topics, use the exported `MemoGrafter` instance's resumable backfill:
+
+```ts
+let afterId: string | undefined;
+do {
+  const page = await memo.backfillTopicClusters(sessionId, {
+    ...(afterId ? { afterId } : {}),
+    limit: 8,
+  });
+  // Inspect page.warnings; restart a full pass later to revisit eligible failures.
+  afterId = page.nextCursor ?? undefined;
+} while (afterId);
+```
+
+`memo.getTopicClusters(sessionId)` returns domain descriptions without embeddings. Topics expose `clusterId` and `clusterAssignment`. `context()` results expose `clusterMetadata.clusters` and `clusterMetadata.topicClusters`, including selected episode-only topic references. Metadata is loaded after selection with a scoped batch query, independently of retrieval candidate caches. Disabling classification preserves existing organizational metadata.
+
+Studio's **Clusters** view groups visible topics by domain and includes **Unclustered**. Topic details, snapshots, table exports, and invocation previews expose domain metadata. Membership is not a graph edge. Clusters do not affect retrieval candidates, scores, traversal, prompts, or token budgets.
+
+Deleting a cluster through `store.deleteTopicCluster(sessionId, clusterId)` clears membership without deleting topics. Suppression preserves membership but excludes the topic from retrieval metadata. Session clearing removes its domains. Absorbed or grafted topics never retain a source-session cluster ID; SDK absorb operations classify eligible copies in the destination, while Studio/store-only copies can be classified by the backfill.
+
+Custom stores can omit all cluster capabilities. Enabling classification on an unsupported store reports a non-fatal warning. Implement the optional catalog, atomic decision, batch metadata, list, and backfill methods in `GraphStore` to support it; final writes must recheck topic and catalog revisions and serialize creation within the session.
+
+Validation commands:
+
+- `npm run test:run` covers classification decisions, cooldowns, timeouts, ingestion failure isolation, retrieval invariance, and Studio grouping.
+- `npm run manual:clusters` uses `DATABASE_URL` for isolated PostgreSQL schema checks, including concurrent creation, foreign keys, upgrade migration, and graft isolation. No provider calls.
+- `npm run accuracy:clusters -- /path/to/mg.config.ts` evaluates the configured providers on labeled domain fixtures without database writes. It reports pair precision/recall, domain fragmentation, abstentions, provider calls, and classification latency. Run against your own representative data before enabling broadly; provider calls incur their usual costs.

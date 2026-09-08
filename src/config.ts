@@ -28,6 +28,7 @@ export type MemoGrafterConfigSource =
   | (() => MemoGrafterProjectConfig | Promise<MemoGrafterProjectConfig>);
 
 export interface MemoGrafterConfigOverrides {
+  clustering?: MemoGrafterConfig["clustering"];
   db?: Partial<MemoGrafterDatabaseConfig>;
   llm?: LLMAdapter;
   embedder?: EmbedAdapter;
@@ -92,6 +93,7 @@ export async function resolveMemoGrafterConfig(
     ...(mergeOptional(projectConfig.drift, overrides.drift, "drift")),
     ...(mergeOptional(projectConfig.graph, overrides.graph, "graph")),
     ...(mergeOptional(projectConfig.inject, overrides.inject, "inject")),
+    ...(mergeOptional(projectConfig.clustering, overrides.clustering, "clustering")),
     ...(queue !== undefined ? { queue } : {}),
     ...(cache !== undefined ? { cache } : {}),
     ...((overrides.diagnostics ?? projectConfig.diagnostics) !== undefined

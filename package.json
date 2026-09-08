@@ -70,9 +70,11 @@
     "manual:contextualized-retrieval": "tsx --env-file=.env tests/manual/contextualized-retrieval-query.ts",
     "live-smoke:smoke": "tsx --env-file=.env tests/manual/live-smoke/run.ts",
     "accuracy:memory": "tsx --env-file=.env tests/manual/accuracy/run.ts",
+    "accuracy:clusters": "tsx tests/manual/accuracy/topic-clusters.ts",
     "accuracy:retrieval-impact": "tsx tests/manual/accuracy/retrieval-candidate-selection-impact.ts",
     "manual:memory-quality": "tsx --env-file=.env tests/manual/memory-quality.ts",
-    "manual:episodes": "tsx --env-file=.env tests/manual/episodes-stable-topics.ts"
+    "manual:episodes": "tsx --env-file=.env tests/manual/episodes-stable-topics.ts",
+    "manual:clusters": "tsx tests/manual/topic-clusters.ts"
   },
   "keywords": [
     "llm",

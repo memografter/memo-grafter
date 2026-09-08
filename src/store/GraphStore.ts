@@ -16,6 +16,17 @@ import type {
 } from "../core/types.js";
 import type { MigrationReport } from "../schema/index.js";
 import type { AcceptIngestionRequest, IngestionRun, IngestionTransition, PreparedIngestion, ReconciliationIssue } from "../ingestion/types.js";
+import type { TopicCluster, TopicClusterAssignment, TopicClusterMetadata } from "../core/types.js";
+
+export interface ClusterDecision {
+  sessionId: string;
+  topicId: string;
+  expectedTopicRevision: number;
+  expectedCatalogRevision: string;
+  cluster: TopicCluster | null;
+  assignment: TopicClusterAssignment;
+  verifiedAlias?: string;
+}
 
 export interface FleetAgentRecord {
   id: string;
@@ -26,6 +37,12 @@ export interface FleetAgentRecord {
 }
 
 export interface GraphStore {
+  getTopicClusterCatalog?(sessionId: string): Promise<{ clusters: TopicCluster[]; revision: string }>;
+  getTopicClusters?(sessionId: string): Promise<Array<Omit<TopicCluster, "embedding">>>;
+  getTopicClusterMetadata?(topics: Array<{ id: string; sessionId: string }>): Promise<TopicClusterMetadata>;
+  commitTopicClusterDecision?(decision: ClusterDecision): Promise<"saved" | "stale">;
+  listUnclusteredTopics?(sessionId: string, afterId: string | undefined, limit: number): Promise<TopicNode[]>;
+  deleteTopicCluster?(sessionId: string, clusterId: string): Promise<boolean>;
   initialize(): Promise<void>;
   migrate(): Promise<MigrationReport>;
   verifySchema(): Promise<void>;

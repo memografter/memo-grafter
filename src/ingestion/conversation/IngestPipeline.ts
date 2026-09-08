@@ -17,6 +17,7 @@ import { splitTextForIngestion } from "../../utils/text/splitTextForIngestion.js
 import { edgePairKey, findCurrentRunReentryEdges } from "../../utils/reentry/reentryEdges.js";
 import { SegmentProcessor } from "./SegmentProcessor.js";
 import { TopicAssigner } from "./TopicAssigner.js";
+import { TopicClusterAssigner } from "../clustering/TopicClusterAssigner.js";
 import { type DriftSegment, TopicDriftDetector } from "./TopicDriftDetector.js";
 import { enrichMemoGrafterError, isMemoGrafterError, MemoGrafterError } from "../../diagnostics.js";
 import { validateEmbedding } from "../../adapters/validation.js";
@@ -29,6 +30,7 @@ const INCREMENTAL_SEMANTIC_THRESHOLD = 0.6;
 export class IngestPipeline {
   private readonly segmentProcessor: SegmentProcessor;
   private readonly topicAssigner: TopicAssigner;
+  readonly clusterAssigner: TopicClusterAssigner;
   private readonly baseDriftThreshold: number;
   private readonly pendingAppends = new Map<string, Promise<void>>();
 
@@ -54,6 +56,7 @@ export class IngestPipeline {
       diagnostics?: MemoGrafterConfig["diagnostics"];
       requirements?: import("../types.js").IngestionRequirements;
       topicAssignment?: { reuseThreshold?: number; candidateLimit?: number };
+      clustering?: MemoGrafterConfig["clustering"];
     },
   ) {
     this.baseDriftThreshold = resolveDriftThreshold(config);
@@ -64,6 +67,7 @@ export class IngestPipeline {
       ...(config.diagnostics !== undefined ? { diagnostics: config.diagnostics } : {}),
     });
     this.topicAssigner = new TopicAssigner(store, config.topicAssignment);
+    this.clusterAssigner = new TopicClusterAssigner(store, llm, embedder, config.clustering, config.diagnostics);
   }
 
   async run(messages: Message[], sessionId: string, options: IngestPipelineOptions = {}): Promise<TopicNode[]> {
@@ -243,6 +247,7 @@ export class IngestPipeline {
 
     await this.linkIncrementalEdges(sessionId, existingNodes, nodes);
     await this.store.updateSessionIngestState(sessionId, jobEndIndex);
+    await this.clusterAssigner.classify(nodes);
 
     return nodes;
   }
@@ -272,7 +277,8 @@ export class IngestPipeline {
     try {
       const prepared = await this.prepareIngestion(running, options);
       const committed = await this.store.commitPreparedIngestion(prepared);
-      const warnings = [...(prepared.warnings ?? []), ...await this.runBestEffortGraphStages(committed.nodes, running.sessionId)];
+      const warnings = [...(prepared.warnings ?? []), ...await this.runBestEffortGraphStages(committed.nodes, running.sessionId),
+        ...await this.clusterAssigner.classify(committed.nodes)];
       let completedRun = committed.run;
       if (warnings.length > 0) completedRun = await this.store.transitionIngestionRun({ runId: run.id, from: ["completed"], to: "completed_with_warnings" });
       return { nodes: committed.nodes, warnings, run: completedRun };

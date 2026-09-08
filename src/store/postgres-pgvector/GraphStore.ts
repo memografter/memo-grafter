@@ -1,3 +1,7 @@
+import { topicClusterMigrationSql } from "../../schema/topicClusterMigration.js";
+import { TopicClusterStore } from "./TopicClusterStore.js";
+import type { ClusterDecision } from "../GraphStore.js";
+import type { TopicClusterAssignment } from "../../core/types.js";
 import { normalizeMemoryQuality, normalizeMemoryQualityWithDefaults, reinforceMemoryQuality, compareQualityEvidence } from "../../utils/memoryQuality.js";
 import { memoryQualityMigrationSql } from "../../schema/memoryQualityMigration.js";
 import { randomUUID } from "node:crypto";
@@ -22,6 +26,8 @@ import { assertIngestionTransition } from "../../ingestion/stateMachine.js";
 import { canonicalizeFactParts, canonicalizeMemory, classifyCanonicalMemory } from "../../utils/extraction/memoryCanonicalization.js";
 
 interface TopicNodeRow {
+  cluster_id?: string | null;
+  cluster_assignment?: TopicClusterAssignment | null;
   id: string;
   session_id: string;
   segment_id: string;
@@ -205,6 +211,18 @@ export class PostgresGraphStore implements GraphStore {
     });
   }
 
+  getTopicClusterCatalog(sessionId: string) { return new TopicClusterStore(this.sql).catalog(sessionId); }
+  getTopicClusters(sessionId: string) { return new TopicClusterStore(this.sql).list(sessionId); }
+  getTopicClusterMetadata(topics: Array<{ id: string; sessionId: string }>) { return new TopicClusterStore(this.sql).forTopics(topics); }
+  commitTopicClusterDecision(decision: ClusterDecision) { return new TopicClusterStore(this.sql).commit(decision); }
+  deleteTopicCluster(sessionId: string, clusterId: string) { return new TopicClusterStore(this.sql).delete(sessionId, clusterId); }
+  async listUnclusteredTopics(sessionId: string, afterId: string | undefined, limit: number): Promise<TopicNode[]> {
+    const rows = await this.sql<TopicNodeRow[]>`SELECT * FROM mg_topic_nodes WHERE session_id=${sessionId}
+      AND cluster_id IS NULL AND suppressed=FALSE AND id > ${afterId ?? ""}
+      ORDER BY id LIMIT ${Math.max(1, Math.min(500, Math.floor(limit)))}`;
+    return rows.map(row => this.rowToNode(row));
+  }
+
   async initialize(): Promise<void> {
     await this.verifySchema();
   }
@@ -220,11 +238,14 @@ export class PostgresGraphStore implements GraphStore {
     if (missingExtensions.length === 0 && missingTables.length === 0) {
       const columns = await this.sql<{ table_name: string; column_name: string }[]>`
         SELECT table_name, column_name FROM information_schema.columns
-        WHERE table_schema = current_schema() AND table_name IN ('mg_memory_nodes', 'mg_memory_evidence')
+        WHERE table_schema = current_schema() AND table_name IN ('mg_memory_nodes', 'mg_memory_evidence', 'mg_topic_nodes')
       `;
       const required = ["quality_explicitness", "quality_source_reliability", "quality_stability", "quality_salience", "quality_defaulted", "quality_origin", "quality_updated_at"];
       if (["mg_memory_nodes", "mg_memory_evidence"].some(table => required.some(column => !columns.some(row => row.table_name === table && row.column_name === column)))) {
         throw new Error("MemoGrafter memory quality migration is required. Run: npx memo-grafter migrate");
+      }
+      if (["cluster_id", "cluster_assignment"].some(column => !columns.some(row => row.table_name === "mg_topic_nodes" && row.column_name === column))) {
+        throw new Error("MemoGrafter topic cluster migration is required. Run: npx memo-grafter migrate");
       }
       return;
     }
@@ -448,6 +469,7 @@ export class PostgresGraphStore implements GraphStore {
     `;
 
     await this.sql.unsafe(memoryQualityMigrationSql);
+    await this.sql.unsafe(topicClusterMigrationSql);
     await this.sql`ALTER TABLE mg_memory_evidence ADD COLUMN IF NOT EXISTS episode_id UUID REFERENCES mg_episodes(id) ON DELETE SET NULL`;
     await this.sql`INSERT INTO mg_episodes (session_id,segment_id,topic_id,summary,intent,outcome,embedding,message_range,episode_order,source_type,source,tags,assignment_method,created_at)
       SELECT session_id,segment_id,id,COALESCE(summary,''),'','',embedding,message_range,topic_order,'conversation',source,tags,'backfill',created_at FROM mg_topic_nodes
@@ -989,39 +1011,24 @@ export class PostgresGraphStore implements GraphStore {
   }
 
   async clearSession(sessionId: string): Promise<void> {
-    const nodeRows = await this.sql<{ id: string }[]>`
-      SELECT id FROM mg_topic_nodes
-      WHERE session_id = ${sessionId}
-    `;
-    const nodeIds = nodeRows.map((row) => row.id);
-
-    if (nodeIds.length > 0) {
-      await this.sql`
-        DELETE FROM mg_topic_edges
-        WHERE src_id = ANY(${this.sql.array(nodeIds)})
-           OR dst_id = ANY(${this.sql.array(nodeIds)})
+    await this.sql.begin(async transaction => {
+      await transaction`SELECT pg_advisory_xact_lock(hashtextextended(${`topic-clusters:${sessionId}`}, 0))`;
+      await transaction`DELETE FROM mg_topic_clusters WHERE session_id=${sessionId}`;
+      const nodeRows = await transaction<{ id: string }[]>`
+        SELECT id FROM mg_topic_nodes WHERE session_id=${sessionId}
       `;
-    }
-
-    await this.sql`
-      DELETE FROM mg_topic_nodes
-      WHERE session_id = ${sessionId}
-    `;
-
-    await this.sql`
-      DELETE FROM mg_segments
-      WHERE session_id = ${sessionId}
-    `;
-
-    await this.sql`
-      DELETE FROM mg_message_buffer
-      WHERE session_id = ${sessionId}
-    `;
-
-    await this.sql`
-      DELETE FROM mg_session_ingest_state
-      WHERE session_id = ${sessionId}
-    `;
+      const nodeIds = nodeRows.map(row => row.id);
+      if (nodeIds.length > 0) {
+        await transaction`
+          DELETE FROM mg_topic_edges
+          WHERE src_id=ANY(${transaction.array(nodeIds)}) OR dst_id=ANY(${transaction.array(nodeIds)})
+        `;
+      }
+      await transaction`DELETE FROM mg_topic_nodes WHERE session_id=${sessionId}`;
+      await transaction`DELETE FROM mg_segments WHERE session_id=${sessionId}`;
+      await transaction`DELETE FROM mg_message_buffer WHERE session_id=${sessionId}`;
+      await transaction`DELETE FROM mg_session_ingest_state WHERE session_id=${sessionId}`;
+    });
   }
 
   async clearSessionGraph(sessionId: string): Promise<void> {
@@ -2101,6 +2108,7 @@ export class PostgresGraphStore implements GraphStore {
 
       const copy: TopicNode = {
         ...source, id: copiedTopicId, sessionId: request.targetSessionId, segmentId,
+        clusterId: null, clusterAssignment: null,
         messageRange: [messageIndex, messageIndex], topicOrder, createdAt,
       };
       return {
@@ -2180,6 +2188,8 @@ export class PostgresGraphStore implements GraphStore {
 
       const copy: TopicNode = {
         ...node,
+        clusterId: null,
+        clusterAssignment: null,
         id: randomUUID(),
         sessionId: targetSessionId,
         segmentId: segment.id,
@@ -2843,6 +2853,8 @@ export class PostgresGraphStore implements GraphStore {
       id: row.id,
       sessionId: row.session_id,
       segmentId: row.segment_id,
+      clusterId: row.cluster_id ?? null,
+      clusterAssignment: row.cluster_assignment ?? null,
       label: row.label ?? "Untitled topic",
       summary: row.summary ?? "",
       embedding: parseVector(row.embedding),
