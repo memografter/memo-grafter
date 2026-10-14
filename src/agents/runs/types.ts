@@ -28,6 +28,7 @@ export interface AgentRun {
   updatedAt: Date;
 }
 export type AgentEventData =
+  | { type: "task.milestone"; label: string; summary: string }
   | { type: "task.started"; objective: string }
   | { type: "tool.call"; toolCallId: string; toolName: string; input: JsonValue }
   | { type: "tool.result"; toolCallId: string; outcome: "success" | "failure"; output: JsonValue }

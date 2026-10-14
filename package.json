@@ -76,6 +76,7 @@
     "accuracy:retrieval-impact": "tsx tests/manual/accuracy/retrieval-candidate-selection-impact.ts",
     "manual:memory-quality": "tsx --env-file=.env tests/manual/memory-quality.ts",
     "manual:agent-runs": "tsx --env-file=.env tests/manual/agent-runs.ts",
+    "manual:agent-memory": "tsx --env-file=.env tests/manual/agent-memory.ts",
     "manual:episodes": "tsx --env-file=.env tests/manual/episodes-stable-topics.ts",
     "manual:clusters": "tsx tests/manual/topic-clusters.ts"
   },

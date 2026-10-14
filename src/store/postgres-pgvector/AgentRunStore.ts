@@ -4,8 +4,10 @@ import {
   type AgentRunAPI, type AgentRunStatus, type CompleteAgentRunInput, type StartAgentRunInput,
 } from "../../agents/runs/types.js";
 import { identifier, jsonSnapshot, nonblank, validateEvent } from "../../agents/runs/validation.js";
+import { redactText, sanitizeEvent } from "../../agents/runs/redaction.js";
+import type { AgentCaptureOptions } from "../../agents/runs/memoryTypes.js";
 
-interface RunRow {
+export interface RunRow {
   run_id: string; agent_id: string; task_id: string; objective: string;
   session_id: string | null; project_id: string | null; status: AgentRunStatus;
   created_at: Date; updated_at: Date;
@@ -15,11 +17,11 @@ type Connection = Sql | TransactionSql;
 
 /** Uses the graph store's pool; no LLM calls or conversation ingestion are involved. */
 export class PostgresAgentRunStore implements AgentRunAPI {
-  private readonly tenantId: string;
-  private readonly agentId: string;
-  private readonly projectIds: string[];
+  protected readonly tenantId: string;
+  protected readonly agentId: string;
+  protected readonly projectIds: string[];
 
-  constructor(private readonly sql: Sql, access: AgentRunAccess) {
+  constructor(protected readonly sql: Sql, access: AgentRunAccess, protected readonly capture: AgentCaptureOptions = {}) {
     identifier(access?.tenantId, "tenantId"); identifier(access?.agentId, "agentId");
     if (access.projectIds !== undefined && !Array.isArray(access.projectIds)) throw new AgentRunError("INVALID_INPUT", "projectIds must be an array.");
     this.tenantId = access.tenantId;
@@ -32,6 +34,8 @@ export class PostgresAgentRunStore implements AgentRunAPI {
     const request = jsonSnapshot(input);
     identifier(request?.runId, "runId"); identifier(request.taskId, "taskId"); nonblank(request.objective, "objective");
     if (request.sessionId !== undefined) identifier(request.sessionId, "sessionId");
+    request.objective = redactText(request.objective, this.capture);
+    nonblank(request.objective, "objective");
     if (request.scope !== undefined && request.scope?.kind !== "private" && request.scope?.kind !== "project") throw new AgentRunError("INVALID_INPUT", "Invalid run scope.");
     const projectId = request.scope?.kind === "project" ? request.scope.projectId : null;
     if (projectId !== null) {
@@ -58,8 +62,8 @@ export class PostgresAgentRunStore implements AgentRunAPI {
   async getRun(runId: string): Promise<AgentRun> { return this.toRun(await this.readRun(this.sql, runId)); }
 
   async recordEvent(runId: string, input: AgentEventInput): Promise<AgentEvent> {
-    const event = validateEvent(input);
-    if (event.data.type.startsWith("task.")) throw new AgentRunError("INVALID_INPUT", "Use completeRun to record a terminal task event.");
+    const event = validateEvent(sanitizeEvent(validateEvent(input), this.capture));
+    if (event.data.type.startsWith("task.") && event.data.type !== "task.milestone") throw new AgentRunError("INVALID_INPUT", "Use completeRun to record a terminal task event.");
     return await this.sql.begin(async tx => {
       const row = await this.readRun(tx, runId, true);
       return this.insertEvent(tx, row, event);
@@ -86,6 +90,8 @@ export class PostgresAgentRunStore implements AgentRunAPI {
     if (!["succeeded", "failed", "cancelled"].includes(request?.outcome)) throw new AgentRunError("INVALID_INPUT", "Invalid completion outcome.");
     const event = validateEvent({ eventId: request.eventId, sequence: request.sequence, occurredAt: request.occurredAt,
       data: { type: request.outcome === "succeeded" ? "task.completed" : request.outcome === "failed" ? "task.failed" : "task.cancelled", summary: request.summary } });
+    event.data = sanitizeEvent(event, this.capture).data;
+    validateEvent(event);
     return await this.sql.begin(async tx => {
       const row = await this.readRun(tx, runId, true);
       // An identical terminal retry succeeds even after the run is sealed.
@@ -127,7 +133,7 @@ export class PostgresAgentRunStore implements AgentRunAPI {
     }) as AgentRun;
   }
 
-  private async readRun(sql: Connection, runId: string, write = false): Promise<RunRow> {
+  protected async readRun(sql: Connection, runId: string, write = false): Promise<RunRow> {
     identifier(runId, "runId");
     // Access is part of the query: hidden runs and absent runs have the same error.
     const rows = await sql<RunRow[]>`SELECT * FROM mg_agent_runs WHERE tenant_id=${this.tenantId} AND run_id=${runId}
@@ -162,7 +168,7 @@ export class PostgresAgentRunStore implements AgentRunAPI {
     return this.toEvent(run.run_id, saved!);
   }
 
-  private toRun(row: RunRow): AgentRun {
+  protected toRun(row: RunRow): AgentRun {
     return { runId: row.run_id, agentId: row.agent_id, taskId: row.task_id, objective: row.objective, sessionId: row.session_id,
       scope: row.project_id === null ? { kind: "private" } : { kind: "project", projectId: row.project_id },
       status: row.status, createdAt: row.created_at, updatedAt: row.updated_at };

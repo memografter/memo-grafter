@@ -57,7 +57,8 @@ try {
   assert.equal(typeof storeModule.AgentRunError, "function");
   const agentEventStore = new storeModule.PostgresGraphStore("postgres://unused");
   const scopedRuns = agentEventStore.agentRuns({ tenantId: "package-test", agentId: "agent-test" });
-  for (const method of ["startRun", "getRun", "recordEvent", "listEvents", "interruptRun", "resumeRun", "completeRun"]) {
+  for (const method of ["startRun", "getRun", "recordEvent", "listEvents", "interruptRun", "resumeRun", "completeRun",
+    "getWorkingState", "updateWorkingState", "processRun", "listEpisodes", "listMemories", "forgetAgentMemory", "suppressEpisode", "restoreEpisode"]) {
     assert.equal(typeof scopedRuns[method], "function", `agent event API must expose ${method}`);
   }
   await agentEventStore.close();

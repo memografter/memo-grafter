@@ -5,7 +5,9 @@ import { documentIngestionMigrationSql } from "../../schema/documentIngestionMig
 import { hydrateDocumentRun, documentReceipt, safeWarnings } from "../../ingestion/documentRun.js";
 import { topicClusterMigrationSql } from "../../schema/topicClusterMigration.js";
 import { agentRunMigrationSql } from "../../schema/agentRunMigration.js";
-import { PostgresAgentRunStore } from "./AgentRunStore.js";
+import { PostgresAgentMemoryStore } from "./AgentMemoryStore.js";
+import { agentMemoryMigrationSql } from "../../schema/agentMemoryMigration.js";
+import type { AgentMemoryAPI, AgentMemoryOptions, PreparedAgentEpisode } from "../../agents/runs/memoryTypes.js";
 import type { AgentRunAccess, AgentRunAPI } from "../../agents/runs/types.js";
 import { TopicClusterStore } from "./TopicClusterStore.js";
 import type { ClusterDecision } from "../GraphStore.js";
@@ -214,7 +216,13 @@ export class PostgresGraphStore implements GraphStore {
   // Admit one callback per pool to leave connections available for those methods.
   private readonly documentFinishWork = new ProviderGate(1);
 
-  agentRuns(access: AgentRunAccess): AgentRunAPI { return new PostgresAgentRunStore(this.sql, access); }
+  agentRuns(access: AgentRunAccess, options: AgentMemoryOptions = {}): AgentRunAPI & AgentMemoryAPI {
+    return new PostgresAgentMemoryStore(this.sql, access, {
+      commit: (tx, prepared, sessionId) => this.commitAgentGraph(tx, prepared, sessionId),
+      readMemories: async ids => (await this.sql<MemoryNodeRow[]>`SELECT * FROM mg_memory_nodes WHERE id=ANY(${ids}::uuid[]) ORDER BY id`).map(row => this.rowToMemoryNode(row)),
+      forget: id => this.forgetMemory(id), suppress: id => this.suppressTopic(id), restore: id => this.restoreTopic(id),
+    }, options);
+  }
 
   constructor(connectionString: string, options: { telemetry?: MemoGrafterDatabaseTelemetry; batchSize?: number } = {}) {
     this.batchSize = options.batchSize ?? 100;
@@ -495,6 +503,7 @@ export class PostgresGraphStore implements GraphStore {
     await this.sql.unsafe(memoryQualityMigrationSql);
     await this.sql.unsafe(topicClusterMigrationSql);
     await this.sql.unsafe(agentRunMigrationSql);
+    await this.sql.unsafe(agentMemoryMigrationSql);
     await this.sql`ALTER TABLE mg_memory_evidence ADD COLUMN IF NOT EXISTS episode_id UUID REFERENCES mg_episodes(id) ON DELETE SET NULL`;
     await this.sql`INSERT INTO mg_episodes (session_id,segment_id,topic_id,summary,intent,outcome,embedding,message_range,episode_order,source_type,source,tags,assignment_method,created_at)
       SELECT session_id,segment_id,id,COALESCE(summary,''),'','',embedding,message_range,topic_order,'conversation',source,tags,'backfill',created_at FROM mg_topic_nodes
@@ -1302,7 +1311,7 @@ export class PostgresGraphStore implements GraphStore {
     });
   }
 
-  private async reconcileAndInsertMemories(transaction: TransactionSql, nodes: MemoryNodeInsert[]): Promise<number> {
+  private async reconcileAndInsertMemories(transaction: TransactionSql, nodes: MemoryNodeInsert[], persistedIds: string[] = []): Promise<number> {
     let insertedCount = 0;
     for (const input of nodes) {
       const normalized = normalizeMemoryQualityWithDefaults(input.quality);
@@ -1330,6 +1339,7 @@ export class PostgresGraphStore implements GraphStore {
       let memoryNodeId = node.id;
       if (classification === "reinforcement" && equivalent) {
         memoryNodeId = equivalent.id;
+        persistedIds.push(memoryNodeId);
         if (await this.insertMemoryEvidence(transaction, memoryNodeId, node)) {
           const existing = this.rowToMemoryNode(equivalent);
           const quality = reinforceMemoryQuality(existing.quality, node.quality);
@@ -1351,6 +1361,7 @@ export class PostgresGraphStore implements GraphStore {
         ${node.quality.explicitness},${node.quality.sourceReliability},${node.quality.stability},${node.quality.salience},${transaction.array(node.qualityDefaulted ?? [])}::text[],${node.qualityOrigin ?? "provided"},NOW(),${toVectorLiteral(node.embedding)}::vector,${transaction.array(normalizeTags(node.tags))}::text[],${node.source ?? null},${node.sourceUrl},${node.sourceTitle},${transaction.json(JSON.parse(JSON.stringify(node.sourceSpans ?? [])))},
         ${node.provenance?.speaker ?? null},${node.provenance ? transaction.array(node.provenance.messageIndexes) : null}::int[],${node.provenance?.sessionId ?? null},${node.provenance?.extractionMethod ?? null},
         ${node.supersededBy},${node.decayed},${node.forgotten ?? false},${classification === "conflict" || node.hasConflict === true},${node.agentColor},${node.fleetId}) ON CONFLICT (id) DO NOTHING RETURNING id`;
+      persistedIds.push(memoryNodeId);
       insertedCount += inserted.length;
       await this.insertMemoryEvidence(transaction, memoryNodeId, node);
       if (classification === "update") {
@@ -1364,6 +1375,36 @@ export class PostgresGraphStore implements GraphStore {
       }
     }
     return insertedCount;
+  }
+
+  /** Share the normal graph and canonical memory writer inside the agent episode transaction. */
+  private async commitAgentGraph(tx: TransactionSql, prepared: PreparedAgentEpisode, sessionId: string): Promise<{ episodeId: string; memoryIds: string[] }> {
+    const segmentId = randomUUID(), topicId = randomUUID(), episodeId = randomUUID();
+    const [cursor] = await tx<{ next: number }[]>`SELECT COALESCE(MAX(end_index)+1,0)::int AS next FROM mg_segments WHERE session_id=${sessionId}`;
+    const start = cursor?.next ?? 0, end = start + prepared.events.length - 1;
+    const source = `agent-run:${prepared.run.runId}`;
+    const boundary = prepared.events.at(-1)!;
+    const label = boundary.data.type === "task.milestone" ? boundary.data.label : prepared.run.objective;
+    const outcome = boundary.data.type === "task.milestone" ? "milestone-reported"
+      : boundary.data.type === "task.completed" ? "host-reported-succeeded"
+        : boundary.data.type === "task.failed" ? "host-reported-failed" : "host-reported-cancelled";
+    await tx`INSERT INTO mg_segments (id,session_id,start_index,end_index,topic_order,drift_score) VALUES (${segmentId},${sessionId},${start},${end},${start},0)`;
+    await tx`INSERT INTO mg_topic_nodes (id,session_id,segment_id,label,summary,embedding,source,message_range,topic_order,drift_score,agent_id,episode_count,embedding_count,first_active_at,last_active_at,last_episode_id)
+      VALUES (${topicId},${sessionId},${segmentId},${label},${prepared.summary},${toVectorLiteral(prepared.embedding)}::vector,${source},${[start,end]},${start},0,${prepared.run.agentId},1,1,NOW(),NOW(),${episodeId}::uuid)`;
+    await tx`INSERT INTO mg_episodes (id,session_id,segment_id,topic_id,summary,intent,outcome,embedding,message_range,episode_order,source_type,source,assignment_method,assignment_version)
+      VALUES (${episodeId}::uuid,${sessionId},${segmentId},${topicId},${prepared.summary},${prepared.run.objective},${outcome},${toVectorLiteral(prepared.embedding)}::vector,${[start,end]},${start},'agent',${source},'created',1)`;
+    const nodes: MemoryNodeInsert[] = prepared.memories.map(({ candidate: c, embedding }) => ({
+      id: randomUUID(), segmentId, topicNodeId: topicId, sessionId, agentId: prepared.run.agentId,
+      memoryType: c.kind === "lesson" ? "insight" : "fact", sourceType: "agent", subject: c.subject,
+      // Scope the canonical fact key by applicability and evidence basis; a failure must not supersede a success.
+      predicate: `${c.predicate} [${c.kind}; ${c.basis}; conditions: ${JSON.stringify(c.conditions)}]`, value: c.value,
+      quality: c.quality, qualityOrigin: "extracted", embedding, source, sourceUrl: null, sourceTitle: null,
+      provenance: { speaker: "system", messageIndexes: [], sessionId, extractionMethod: "inferred" },
+      supersededBy: null, decayed: false, agentColor: null, fleetId: null,
+    }));
+    const memoryIds: string[] = [];
+    await this.reconcileAndInsertMemories(tx, nodes, memoryIds);
+    return { episodeId, memoryIds };
   }
 
   private async insertMemoryEvidence(transaction: TransactionSql, memoryNodeId: string, node: MemoryNodeInsert): Promise<boolean> {
