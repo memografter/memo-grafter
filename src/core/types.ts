@@ -120,7 +120,7 @@ export interface TopicSegment {
 }
 
 export type MemoryType = "fact" | "insight" | "question" | "task" | "reference";
-export type MemorySourceType = "conversation" | "note" | "document" | "code";
+export type MemorySourceType = "conversation" | "note" | "document" | "code" | "agent";
 export type MemorySpeaker = "user" | "assistant" | "system" | "document";
 export type MemoryExtractionMethod = "explicit" | "inferred" | "user-confirmed" | "document-extraction";
 

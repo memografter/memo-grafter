@@ -212,11 +212,16 @@ Agent event capture is available through `memo.agentRuns(access)` or the provide
 tool calls/results, observations, and artifact references. Run `npx memo-grafter migrate` first.
 
 Events support idempotent retries, out-of-order delivery, interruption/resume, and private or
-explicitly project-shared access. This first phase stores evidence; it does not yet extract
-agent lessons or include these events in conversation recall.
+explicitly project-shared access. Agent memory now also supports revisioned working state,
+milestone/task episodes, and evidence-linked facts and conditional lessons through `processRun()`.
+These memories reuse the graph's quality and lifecycle controls. Agent context retrieval is
+planned separately; events are not automatically injected into conversation recall.
 
 See the [agent event capture example](./examples/agent-event-capture/README.md) for the API,
 access contract, and recovery semantics.
+
+See the [agent memory guide](./examples/agent-memory/README.md) for extraction, working state,
+redaction, and evidence inspection.
 
 ## Core Concepts
 

@@ -1,4 +1,5 @@
 import type { AgentRunAccess, AgentRunAPI } from "../agents/runs/types.js";
+import type { AgentMemoryAPI, AgentMemoryOptions } from "../agents/runs/memoryTypes.js";
 import type {
   GraftRegistryEntry,
   Episode,
@@ -38,7 +39,7 @@ export interface FleetAgentRecord {
 }
 
 export interface GraphStore {
-  agentRuns?(access: AgentRunAccess): AgentRunAPI;
+  agentRuns?(access: AgentRunAccess, options?: AgentMemoryOptions): AgentRunAPI & AgentMemoryAPI;
   getTopicClusterCatalog?(sessionId: string): Promise<{ clusters: TopicCluster[]; revision: string }>;
   getTopicClusters?(sessionId: string): Promise<Array<Omit<TopicCluster, "embedding">>>;
   getTopicClusterMetadata?(topics: Array<{ id: string; sessionId: string }>): Promise<TopicClusterMetadata>;

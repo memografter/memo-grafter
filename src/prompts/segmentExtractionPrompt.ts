@@ -1,7 +1,7 @@
 import type { Message } from "../core/types.js";
 import { normalizeText } from "../utils/text/normalizeText.js";
 
-export function buildSegmentExtractionPrompt(messages: Message[], labelHint?: string, sourceType: "conversation" | "note" | "document" | "code" = "conversation"): string {
+export function buildSegmentExtractionPrompt(messages: Message[], labelHint?: string, sourceType: import("../core/types.js").MemorySourceType = "conversation"): string {
   const documentMode = sourceType !== "conversation";
   const messageContent = messages
     .map((message, index) => `Message ${index + 1}:\n[${message.role}] ${normalizeText(message.content) ?? message.content}`)

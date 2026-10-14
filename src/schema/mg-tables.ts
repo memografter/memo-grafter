@@ -1,8 +1,9 @@
+import { agentMemoryTables, agentMemoryIndexes } from "./agentMemorySchema.js";
 import { mgExtension, mgIndex, mgTable } from "./builders.js";
 import { agentRunTables, agentRunIndexes } from "./agentRunSchema.js";
 
 export const memoGrafterMigrationTableName = "mg_migrations";
-export const memoGrafterCurrentMigrationVersion = 10;
+export const memoGrafterCurrentMigrationVersion = 11;
 
 export const memoGrafterExtensions = [
   mgExtension({
@@ -16,6 +17,7 @@ export const memoGrafterExtensions = [
 ] as const;
 
 export const memoGrafterTables = [
+  ...agentMemoryTables,
   ...agentRunTables,
   mgTable({
     name: "mg_topic_clusters", description: "Optional session-scoped topic domains; no retrieval graph edges.",
@@ -105,7 +107,7 @@ export const memoGrafterTables = [
       { name: "embedding", type: "vector", nullable: true },
       { name: "message_range", type: "int[]" },
       { name: "episode_order", type: "int" },
-      { name: "source_type", type: "text", default: "conversation", check: "conversation|note|document|code" },
+      { name: "source_type", type: "text", default: "conversation", check: "conversation|note|document|code|agent" },
       { name: "source", type: "text", nullable: true },
       { name: "tags", type: "text[]", default: "'{}'" },
       { name: "assignment_method", type: "text", default: "created", check: "created|embedding|llm|backfill" },
@@ -135,7 +137,7 @@ export const memoGrafterTables = [
       { name: "agent_id", type: "text", nullable: true },
       { name: "session_id", type: "text" },
       { name: "memory_type", type: "text", check: "fact|insight|question|task|reference" },
-      { name: "source_type", type: "text", default: "conversation", check: "conversation|note|document|code" },
+      { name: "source_type", type: "text", default: "conversation", check: "conversation|note|document|code|agent" },
       { name: "subject", type: "text" },
       { name: "predicate", type: "text" },
       { name: "value", type: "text" },
@@ -298,6 +300,7 @@ export const memoGrafterTables = [
 export const memoGrafterIndexes = [
   mgIndex({ name: "mg_ingestion_runs_current_message_range_idx", table: "mg_ingestion_runs", description: "Unique current message ranges; documents stage independently." }),
   ...agentRunIndexes,
+  ...agentMemoryIndexes,
   mgIndex({ name: "idx_topic_nodes_cluster", table: "mg_topic_nodes", description: "Session-scoped cluster membership lookup." }),
   mgIndex({ name: "mg_message_buffer_session_idx", table: "mg_message_buffer", description: "Message lookup by session and index." }),
   mgIndex({ name: "mg_segments_session_idx", table: "mg_segments", description: "Segment lookup by session and topic order." }),

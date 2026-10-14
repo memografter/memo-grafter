@@ -1,3 +1,4 @@
+import type { AgentCaptureOptions, AgentMemoryAPI } from "../agents/runs/memoryTypes.js";
 import { randomUUID } from "node:crypto";
 import { documentReceipt, terminalDocumentStatus } from "../ingestion/documentRun.js";
 import { validateDocument } from "../ingestion/validateDocument.js";
@@ -49,9 +50,9 @@ import { loadClusterMetadata } from "../retrieval/clusterMetadata.js";
 
 export class MemoGrafter {
   /** Capture agent work using identity and project grants supplied by the trusted host. */
-  agentRuns(access: AgentRunAccess): AgentRunAPI {
+  agentRuns(access: AgentRunAccess, options: AgentCaptureOptions = {}): AgentRunAPI & AgentMemoryAPI {
     if (!this.store.agentRuns) throw new AgentRunError("INVALID_STATE", "The configured store does not support agent runs.");
-    return this.store.agentRuns(access);
+    return this.store.agentRuns(access, { ...options, llm: this.llm, embedder: this.embedder });
   }
 
   readonly llm: LLMAdapter;

@@ -1,5 +1,7 @@
 export { MemoGrafterAgent } from "./agents/MemoGrafterAgent.js";
 export { AgentRunError } from "./agents/runs/types.js";
+export type { AgentCaptureOptions, AgentMemoryOptions, AgentWorkingState, AgentWorkingStateSnapshot, AgentMemoryBasis,
+  AgentMemoryCandidate, AgentTaskEpisode, AgentMemoryEvidence, AgentDurableMemory, AgentMemoryAPI } from "./agents/runs/memoryTypes.js";
 export type { AgentRunAccess, AgentRunScope, AgentRunStatus, StartAgentRunInput, AgentRun,
   AgentEventData, JsonValue, AgentEventInput, AgentEvent, CompleteAgentRunInput, AgentRunAPI,
   AgentRunErrorCode } from "./agents/runs/types.js";

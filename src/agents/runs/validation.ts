@@ -72,6 +72,7 @@ export function validateEvent(input: AgentEventInput): AgentEventInput {
       if (!["success", "failure"].includes(data.outcome) || !("output" in data)) throw new AgentRunError("INVALID_INPUT", "tool.result requires outcome and output.");
       break;
     case "observation": nonblank(data.text, "text"); break;
+    case "task.milestone": nonblank(data.label, "label"); nonblank(data.summary, "summary"); break;
     case "artifact":
       nonblank(data.uri, "uri");
       if (data.description !== undefined) nonblank(data.description, "description");

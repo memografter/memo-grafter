@@ -1,12 +1,15 @@
 # Agent event capture (phase one)
 
 MemoGrafter records agent work independently of conversation turns. It does not execute tools.
-This phase provides event storage, not automatic memory extraction or agent context retrieval.
+The event API provides storage without model calls. Optional extraction and working-state APIs
+are described in the [agent memory guide](../agent-memory/README.md); agent context retrieval
+is planned separately.
 
 Run `npx memo-grafter migrate` once before using the new APIs. The additive migration creates
 `mg_agent_identities`, `mg_agent_runs`, and `mg_agent_events`. Existing conversation records
 and APIs retain their meaning. Runtime initialization requires the upgraded schema; it does
-not perform migrations. Migration ledger version 8 includes standalone migration 012.
+not perform migrations. Migration ledger version 8 introduced standalone migration 012;
+version 11 adds agent memory in migration 015.
 
 ## Provider-independent usage
 
@@ -101,7 +104,7 @@ The storage-only entry point requires neither a model provider nor an embedding 
 reserved ID `$start`. Caller events use positive integer sequence numbers. Run IDs are unique
 within a tenant; event IDs and sequences are unique within a run.
 
-Use `recordEvent` for `tool.call`, `tool.result`, `observation` (`text`), and `artifact` (`uri`,
+Use `recordEvent` for `task.milestone` (`label`, `summary`), `tool.call`, `tool.result`, `observation` (`text`), and `artifact` (`uri`,
 optional `description`). Each event requires a timestamp with timezone. Source references are
 optional. Tool-call IDs correlate exactly one call with at most one result; a new tool attempt
 requires a new tool-call ID. A result may arrive before its call but must have a later sequence.
@@ -127,6 +130,12 @@ reference an earlier call. Successful runs must have results for all calls; fail
 runs may retain pending calls. Resume an interrupted run before completing it. Terminal runs
 cannot be reopened; start a new run for another attempt. Recorded success is a host report,
 not independent verification by MemoGrafter.
+
+Common credential fields are redacted before persistence; configure a deterministic `redactText`
+hook for application-specific sensitive data. Tool inputs/outputs larger than 16,000 characters
+are stored as bounded previews and digests; configure `maxToolPayloadChars` to adjust this.
+Retries compare the sanitized event. Raw originals are not retained. See the agent memory guide
+for limits and the treatment of truncated evidence.
 
 Payloads must be plain JSON (no dates, maps, cycles, or non-finite numbers) and at most 256 KiB
 per event, with nesting limited to 64 levels. IDs are limited to 256 UTF-8 bytes; descriptive
